@@ -4,6 +4,8 @@
 
 QuantumOX analyzes positions thoroughly, predicts wins/losses/draws, and can handle manual or automated moves with precision. It’s designed to be engine-agnostic, letting other programs or interfaces communicate with it via standard UTTTI commands.
 
+> NOTE: Since there is no Tic-Tac-Toe GUI for UTTTI, play manually in: [Gametable](https://gametable.org/games/tic-tac-toe/)
+
 ## Features
 
 - Advanced Minimax/Negamax search with alpha-beta pruning
