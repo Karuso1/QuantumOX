@@ -1,18 +1,22 @@
 # QuantumOX
 
-**QuantumOX** is a highly advanced Tic-Tac-Toe engine using the **UTTTI(Universal Tic-Tac-Toe Interface)** protocol. Inspired by my previous engine **QuantumKing**, it combines a deep minimax/negamax search with alpha-beta pruning to make intelligent and efficient decisions—even in complex board configurations like 3x3, 4x4, or 3x3x3 grids.
+QuantumOX is a highly advanced Tic-Tac-Toe engine using the UTTTI (Universal Tic-Tac-Toe Interface) protocol. Inspired by my previous engine QuantumKing, it combines a deep minimax/negamax search with alpha-beta pruning to make intelligent and efficient decisions—even in complex board configurations like 3x3, 4x4, or 3x3x3 grids.
 
 QuantumOX analyzes positions thoroughly, predicts wins/losses/draws, and can handle manual or automated moves with precision. It’s designed to be engine-agnostic, letting other programs or interfaces communicate with it via standard UTTTI commands.
 
-> NOTE: Since there is no Tic-Tac-Toe GUI for UTTTI, play manually in: [Gametable](https://gametable.org/games/tic-tac-toe/) or [Math10](https://www.math10.com/en/math-games/tic-tac-toe/tic-tac-toe.html)(for 5x5 board).
+> NOTE: Since there is no Tic-Tac-Toe GUI for UTTTI, play manually in: [Gametable](https://gametable.org/games/tic-tac-toe/) or [Math10](https://www.math10.com/en/math-games/tic-tac-toe/tic-tac-toe.html)
 
 ## Features
 
 - Advanced Minimax/Negamax search with alpha-beta pruning
 - Iterative deepening with depth control
 - Principal Variation (PV) extraction for move insights
+- Reports `minimaxpv` and `negamaxpv` in info lines for detailed search analysis(new feature):
+  - `minimaxpv` shows the principal variation according to the minimax evaluation
+  - `negamaxpv` shows the principal variation according to the negamax evaluation
+  - `pv` now shows the final selected move sequence after combining insights from both
 - Handles draws, wins, and losses accurately
-- Fully UTTTI-compliant: supports go depth, grid emptygrid, setoption, stop, and more
+- Fully UTTTI-compliant: supports `go depth`, `grid emptygrid`, `setoption`, `stop`, and more
 - Configurable board sizes: 3x3, 4x4, 3x3x3, etc.
 - Lightweight and portable (pure Python)
 
@@ -50,18 +54,20 @@ setoption name Grid value 3x3
 info string set "Grid" to 3x3
 isready
 readyok
-uttinewgame
+utttinewgame
 grid emptygrid
 isready
 readyok  
 go depth 3
-info depth 1 seldepth 1 score cp 36 nodes 10 pv 5
-info depth 2 seldepth 2 score cp 12 nodes 37 pv 5 1      
-info depth 3 seldepth 3 score cp 59 nodes 135 pv 5 1 3   
+info depth 1 seldepth 1 score cp 36 nodes 10 minimaxpv 5 negamaxpv 5 pv 5
+info depth 2 seldepth 2 score cp 12 nodes 37 minimaxpv 5 negamaxpv 5 pv 5 1      
+info depth 3 seldepth 3 score cp 59 nodes 135 minimaxpv 5 negamaxpv 5 pv 5 1 3   
 bestmove 5 ponder 1
+```
 
-OR (for playing first)
+OR (for playing first):
 
+```
 uttti
 id name QuantumOX
 id author Kartik
@@ -79,10 +85,10 @@ grid emptygrid fill 2
 isready
 readyok
 go depth 4
-info depth 1 seldepth 1 score cp 17 nodes 9 pv 5
-info depth 2 seldepth 2 score cp -28 nodes 36 pv 5 1     
-info depth 3 seldepth 3 score cp 40 nodes 123 pv 5 7 9   
-info depth 4 seldepth 4 score cp -30 nodes 330 pv 5 1 3 7
+info depth 1 seldepth 1 score cp 17 nodes 9 minimaxpv 5 negamaxpv 5 pv 5
+info depth 2 seldepth 2 score cp -28 nodes 36 minimaxpv 5 negamaxpv 5 pv 5 1     
+info depth 3 seldepth 3 score cp 40 nodes 123 minimaxpv 5 negamaxpv 5 pv 5 7 9   
+info depth 4 seldepth 4 score cp -30 nodes 330 minimaxpv 5 negamaxpv 5 pv 5 1 3 7
 bestmove 5 ponder 1
 ```
 
