@@ -85,14 +85,27 @@ class QuantumOXEngine:
         """
         res = self.searcher.search(self.board, max_depth=depth, time_ms=time_ms, nodes_limit=nodes)
         info_lines: List[str] = []
+
         for d in res.get("infos", []):
-            # d contains keys: depth, seldepth, score, nodes, pv
-            line = format_info_line(
-                depth=d.get("depth"),
-                seldepth=d.get("seldepth"),
-                score_cp=d.get("score"),
-                nodes=d.get("nodes"),
-                pv=d.get("pv"),
+            # gather PVs (fall back to empty list if missing)
+            pv_main = d.get("pv", [])
+            neg_pv = d.get("negamaxpv", [])
+            min_pv = d.get("minimaxpv", [])
+
+            # convert to space-separated string of moves
+            pv_main_str = " ".join(str(m) for m in pv_main)
+            neg_pv_str = " ".join(str(m) for m in neg_pv)
+            min_pv_str = " ".join(str(m) for m in min_pv)
+
+            # create a single info line with all three PVs
+            line = (
+                f"info depth {d.get('depth')} "
+                f"seldepth {d.get('seldepth')} "
+                f"score cp {d.get('score')} "
+                f"nodes {d.get('nodes')} "
+                f"minimaxpv {min_pv_str} "
+                f"negamaxpv {neg_pv_str} "
+                f"pv {pv_main_str}"
             )
             info_lines.append(line)
 
