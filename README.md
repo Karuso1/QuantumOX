@@ -108,7 +108,7 @@ QuantumOX is a personal project by **Kartik**. It's a proof-of-concept that even
 
 ## License
 
-QuantumOX is released under the **MIT License.**
+QuantumOX is released under the **GPL-3.0 License.**
 You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, as long as you include the original copyright notice.
 
 For full license text, see [LICENSE](https://github.com/Karuso1/QuantumOX/blob/main/LICENSE)
