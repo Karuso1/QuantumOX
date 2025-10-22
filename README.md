@@ -37,7 +37,7 @@ Basic commands:
 - `grid emptygrid fill ...` - fills the O/X.
 - `go` - starts the search, can add `depth {depth}` after it for customized depth.
 - `stop` - stop current search
-- `quit` / exit - exit engine
+- `quit` / `exit` - exit engine
 - `help` - shows commands
 
 Example UTTTI session:
