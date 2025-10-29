@@ -1,0 +1,79 @@
+name: Bug Report
+description: Report a problem or unexpected behavior in QuantumOX
+title: "[Bug]: "
+labels: ["bug"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug in **QuantumOX**.
+        Please fill out the following details to help us investigate and fix the issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: QuantumOX Version
+      description: Specify the version of QuantumOX you’re using.
+      placeholder: v1.0 (or v1.1 if using the development build)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the issue.
+      placeholder: Describe what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: What steps can we take to reproduce the issue?
+      placeholder: |
+        1. Run `uttti`
+        2. Use `go depth 3`
+        3. Observe incorrect output...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect the engine to do?
+      placeholder: Expected move or correct info output...
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What did the engine actually do?
+      placeholder: Describe the unexpected output or result...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Engine Output
+      description: Paste any console or UTTTI output relevant to the issue.
+      render: shell
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other information, conditions, or observations that might help.
