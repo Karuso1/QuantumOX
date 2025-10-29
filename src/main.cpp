@@ -142,7 +142,7 @@ void handle_go(QuantumOXEngine& engine, const std::vector<std::string>& tokens) 
 }
 
 int main() {
-    std::cout << "QuantumOX " << ENGINE_VERSION << " by Kartik Pawar\n";
+    std::cout << "QuantumOX " << ENGINE_VERSION << " by " << ENGINE_AUTHOR << "\n";
     std::cout.flush();
     
     QuantumOXEngine engine;
