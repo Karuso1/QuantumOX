@@ -1,6 +1,6 @@
 # QuantumOX
 
-QuantumOX is a high-performance Tic-Tac-Toe engine written in **C++**, implementing the **UTTTI (Universal Tic-Tac-Toe Interface)** protocol. It draws inspiration from my earlier engine *QuantumKing*, and integrates advanced **Minimax** and **Negamax** search algorithms with **alpha-beta pruning**, enabling it to make strategic decisions efficiently—even on complex boards like 3x3, 4x4, or 3x3x3.
+QuantumOX is a high-performance Tic-Tac-Toe engine written in **C++**, implementing the **UTTTI (Universal Tic-Tac-Toe Interface)** protocol. It draws inspiration from my earlier engine *QuantumKing*, and integrates advanced **Minimax** and **Negamax** search algorithms with **alpha-beta pruning**, enabling it to make strategic decisions efficiently—even on complex boards like 4x4, 5x5 or 3x3x3.
 
 QuantumOX evaluates game states with precision, predicts outcomes (win/loss/draw), and supports both manual and automated play. Its modular design allows other programs or GUIs to interact with it using standard UTTTI commands.
 
