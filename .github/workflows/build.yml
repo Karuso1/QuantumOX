@@ -29,10 +29,6 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install zip gnu-tar || true
 
-      - name: Install build tools (Windows)
-        if: runner.os == 'Windows'
-        run: choco install zip -y || true
-
       # ---- Detect native arch ----
       - name: Detect architecture
         id: native
@@ -65,28 +61,30 @@ jobs:
         shell: bash
         run: |
           cd bin
-          os=${{ steps.native.outputs.os }}
-          arch=${{ steps.native.outputs.arch }}
+          os="${{ steps.native.outputs.os }}"
+          arch="${{ steps.native.outputs.arch }}"
           exe="quantumox-${os}-${arch}"
+
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            zip "${exe}.zip" "${exe}.exe"
+            cp "${exe}.exe" "../${exe}.exe"
+            cd ..
+            powershell Compress-Archive -Path "${exe}.exe" -DestinationPath "${exe}.zip"
             rm "${exe}.exe"
+            echo "Created ${exe}.zip"
           else
+            cp "${exe}" "../${exe}"
+            cd ..
             tar -czf "${exe}.tar.gz" "${exe}"
             rm "${exe}"
+            echo "Created ${exe}.tar.gz"
           fi
-          cd ..
-
-      # ---- Verify Output ----
-      - name: Verify Build Output
-        shell: bash
-        run: |
-          echo "Final bin contents:"
-          ls -lh bin/
 
       # ---- Upload Artifact ----
       - name: Upload QuantumOX Artifact
         uses: actions/upload-artifact@v4
         with:
           name: QuantumOX-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
-          path: bin/
+          path: |
+            quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}.zip
+            quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}.tar.gz
+          if-no-files-found: ignore
