@@ -107,6 +107,7 @@ GoResult QuantumOXEngine::go(std::optional<int> depth,
             << " nodes " << d.nodes
             << " minimaxpv " << min_pv_str
             << " negamaxpv " << neg_pv_str
+            << " time " << d.time_ms
             << " pv " << pv_main_str;
 
         out.info_lines.push_back(oss.str());
