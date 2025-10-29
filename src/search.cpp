@@ -28,6 +28,8 @@
 #include <string>
 #include <unordered_set>
 
+using namespace std::chrono;
+
 namespace QuantumOX {
 
     // --- small helpers --------------------------------------------------------
@@ -97,111 +99,112 @@ namespace QuantumOX {
         int prev_min_score = 0;
                                         
         for (int depth = 1; depth <= max_depth; ++depth) {
-        if (should_abort()) break;
-            
-        // ---------------- NEGAMAX pass with aspiration window ----------------
-        int nodes_before = nodes;
-        int alpha, beta;
-        if (depth > 1) {
-            alpha = prev_neg_score - ASP_WINDOW;
-            beta = prev_neg_score + ASP_WINDOW;
-        } else {
-            alpha = -10000000;
-            beta = 10000000;
+            if (should_abort()) break;
+
+            // ---------------- NEGAMAX pass with aspiration window ----------------
+            int nodes_before = nodes;
+            int alpha, beta;
+            if (depth > 1) {
+                alpha = prev_neg_score - ASP_WINDOW;
+                beta = prev_neg_score + ASP_WINDOW;
+            } else {
+                alpha = -10000000;
+                beta = 10000000;
+            }
+        
+            int neg_score = negamax_root(board, depth, alpha, beta);
+        
+            if (depth > 1 && (neg_score <= alpha || neg_score >= beta)) {
+                alpha = -10000000; beta = 10000000;
+                neg_score = negamax_root(board, depth, alpha, beta);
+            }
+        
+            int neg_nodes = nodes - nodes_before;
+            prev_neg_score = neg_score;
+        
+            if (abort_flag) break;
+        
+            // ---------------- negamax PV & move ----------------
+            std::optional<int> neg_move = std::nullopt;
+            std::vector<int> neg_pv;
+            {
+                auto it = tt_plain.find(key_plain);
+                if (it != tt_plain.end()) neg_move = it->second.best_move;
+            }
+            try { neg_pv = build_pv(board); } 
+            catch(...) { if (neg_move) neg_pv = {*neg_move}; }
+        
+            if (should_abort()) break;
+        
+            // ---------------- MINIMAX pass ----------------
+            int nodes_before_min = nodes;
+            if (depth > 1) {
+                alpha = prev_min_score - ASP_WINDOW;
+                beta = prev_min_score + ASP_WINDOW;
+            } else {
+                alpha = -10000000; beta = 10000000;
+            }
+        
+            int min_score = minimax_root(board, depth, alpha, beta);
+            if (depth > 1 && (min_score <= alpha || min_score >= beta)) {
+                alpha = -10000000; beta = 10000000;
+                min_score = minimax_root(board, depth, alpha, beta);
+            }
+            int min_nodes = nodes - nodes_before_min;
+            prev_min_score = min_score;
+        
+            if (abort_flag) break;
+        
+            std::optional<int> min_move = std::nullopt;
+            std::vector<int> min_pv;
+            {
+                uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
+                auto it = tt_root.find(rootk);
+                if (it != tt_root.end()) min_move = it->second.best_move;
+            }
+            try { min_pv = build_pv_for_root(board, root_player); }
+            catch(...) {
+                try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
+            }
+        
+            // ---------------- pick between negamax and minimax ----------------
+            std::string selector = "negamax";
+            int chosen_score = neg_score;
+            std::optional<int> chosen_move = neg_move;
+            std::vector<int> chosen_pv = neg_pv;
+        
+            if (min_score > neg_score) {
+                selector = "minimax";
+                chosen_score = min_score;
+                chosen_move = min_move;
+                chosen_pv = min_pv;
+            } else if (min_score == neg_score && min_nodes < neg_nodes) {
+                selector = "minimax";
+                chosen_score = min_score;
+                chosen_move = min_move;
+                chosen_pv = min_pv;
+            }
+        
+            if (chosen_move.has_value()) {
+                best_move = chosen_move;
+                best_score = chosen_score;
+                best_pv = chosen_pv;
+            }
+        
+            // ---------------- record info ----------------
+            InfoRecord rec;
+            rec.depth = depth;
+            rec.seldepth = depth;
+            rec.score = best_score;
+            rec.nodes = nodes;
+            rec.negamaxpv = neg_pv;
+            rec.minimaxpv = min_pv;
+            rec.time_ms = elapsed_ms();
+            rec.pv = best_pv;
+            infos.push_back(std::move(rec));
+        
+            if (time_exceeded() || nodes_exceeded()) break;
         }
-    
-        int neg_score = negamax_root(board, depth, alpha, beta);
-    
-        if (depth > 1 && (neg_score <= alpha || neg_score >= beta)) {
-            alpha = -10000000; beta = 10000000;
-            neg_score = negamax_root(board, depth, alpha, beta);
-        }
-    
-        int neg_nodes = nodes - nodes_before;
-        prev_neg_score = neg_score;
-    
-        if (abort_flag) break;
-    
-        // ---------------- negamax PV & move ----------------
-        std::optional<int> neg_move = std::nullopt;
-        std::vector<int> neg_pv;
-        {
-            auto it = tt_plain.find(key_plain);
-            if (it != tt_plain.end()) neg_move = it->second.best_move;
-        }
-        try { neg_pv = build_pv(board); } 
-        catch(...) { if (neg_move) neg_pv = {*neg_move}; }
-    
-        if (should_abort()) break;
-    
-        // ---------------- MINIMAX pass ----------------
-        int nodes_before_min = nodes;
-        if (depth > 1) {
-            alpha = prev_min_score - ASP_WINDOW;
-            beta = prev_min_score + ASP_WINDOW;
-        } else {
-            alpha = -10000000; beta = 10000000;
-        }
-    
-        int min_score = minimax_root(board, depth, alpha, beta);
-        if (depth > 1 && (min_score <= alpha || min_score >= beta)) {
-            alpha = -10000000; beta = 10000000;
-            min_score = minimax_root(board, depth, alpha, beta);
-        }
-        int min_nodes = nodes - nodes_before_min;
-        prev_min_score = min_score;
-    
-        if (abort_flag) break;
-    
-        std::optional<int> min_move = std::nullopt;
-        std::vector<int> min_pv;
-        {
-            uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
-            auto it = tt_root.find(rootk);
-            if (it != tt_root.end()) min_move = it->second.best_move;
-        }
-        try { min_pv = build_pv_for_root(board, root_player); }
-        catch(...) {
-            try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
-        }
-    
-        // ---------------- pick between negamax and minimax ----------------
-        std::string selector = "negamax";
-        int chosen_score = neg_score;
-        std::optional<int> chosen_move = neg_move;
-        std::vector<int> chosen_pv = neg_pv;
-    
-        if (min_score > neg_score) {
-            selector = "minimax";
-            chosen_score = min_score;
-            chosen_move = min_move;
-            chosen_pv = min_pv;
-        } else if (min_score == neg_score && min_nodes < neg_nodes) {
-            selector = "minimax";
-            chosen_score = min_score;
-            chosen_move = min_move;
-            chosen_pv = min_pv;
-        }
-    
-        if (chosen_move.has_value()) {
-            best_move = chosen_move;
-            best_score = chosen_score;
-            best_pv = chosen_pv;
-        }
-    
-        // ---------------- record info ----------------
-        InfoRecord rec;
-        rec.depth = depth;
-        rec.seldepth = depth;
-        rec.score = best_score;
-        rec.nodes = nodes;
-        rec.negamaxpv = neg_pv;
-        rec.minimaxpv = min_pv;
-        rec.pv = best_pv;
-        infos.push_back(std::move(rec));
-    
-        if (time_exceeded() || nodes_exceeded()) break;
-    }
     
         Searcher::SearchResult res;
         res.bestmove = best_move;
@@ -589,6 +592,12 @@ namespace QuantumOX {
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(now - start_time).count();
         return elapsed >= *time_limit;
+    }
+
+    int Searcher::elapsed_ms() const {
+        return static_cast<int>(
+            duration_cast<milliseconds>(steady_clock::now() - start_time).count()
+        );
     }
     
     bool Searcher::nodes_exceeded() const { if (!node_limit.has_value()) return false; return nodes >= *node_limit; }
