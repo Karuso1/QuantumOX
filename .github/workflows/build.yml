@@ -18,58 +18,75 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install g++
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+      # ---- Install tools ----
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -y || true
-          sudo apt-get install -y g++ || true
+          sudo apt-get update -y
+          sudo apt-get install -y g++ zip tar
 
-      - name: Make scripts executable
-        shell: bash
-        run: chmod +x scripts/natives.sh
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install zip gnu-tar || true
 
-      - name: Run Native Detection Script
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install zip -y || true
+
+      # ---- Detect native arch ----
+      - name: Detect architecture
         id: native
         shell: bash
         run: |
-          output=$(bash scripts/natives.sh)
-          echo "$output"
-          arch=$(echo "$output" | awk '{print $1}')
-          filename=$(echo "$output" | awk '{print $2}')
+          arch=$(uname -m)
+          os=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          if [[ "$arch" == "x86_64" ]]; then
+            arch="x86-64"
+          fi
+          echo "os=$os" >> $GITHUB_OUTPUT
           echo "arch=$arch" >> $GITHUB_OUTPUT
-          echo "filename=$filename" >> $GITHUB_OUTPUT
 
+      # ---- Build ----
       - name: Build QuantumOX
         shell: bash
         run: |
           mkdir -p bin
-          exe_name="quantumox"
+          os=${{ steps.native.outputs.os }}
+          arch=${{ steps.native.outputs.arch }}
+          exe_name="quantumox-${os}-${arch}"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            exe_name="quantumox.exe"
+            exe_name="${exe_name}.exe"
           fi
-          echo "Building QuantumOX for ${{ steps.native.outputs.arch }}"
+          echo "Compiling -> bin/${exe_name}"
           g++ -std=c++20 -O3 -Wall -Wextra src/*.cpp -o "bin/${exe_name}"
 
+      # ---- Package ----
       - name: Package Binary
         shell: bash
         run: |
           cd bin
-          file="${{ steps.native.outputs.filename }}"
-          if [[ "$file" == *.zip ]]; then
-            zip -r "$file" ./*
+          os=${{ steps.native.outputs.os }}
+          arch=${{ steps.native.outputs.arch }}
+          exe="quantumox-${os}-${arch}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            zip "${exe}.zip" "${exe}.exe"
+            rm "${exe}.exe"
           else
-            tar -czf "$file" ./*
+            tar -czf "${exe}.tar.gz" "${exe}"
+            rm "${exe}"
           fi
           cd ..
 
+      # ---- Verify Output ----
       - name: Verify Build Output
         shell: bash
         run: |
+          echo "Final bin contents:"
           ls -lh bin/
-          file bin/* || true
 
+      # ---- Upload Artifact ----
       - name: Upload QuantumOX Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.native.outputs.filename }}
-          path: bin/${{ steps.native.outputs.filename }}
+          name: QuantumOX-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
+          path: bin/
