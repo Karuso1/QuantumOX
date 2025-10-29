@@ -26,7 +26,7 @@ QuantumOX evaluates game states with precision, predicts outcomes (win/loss/draw
 To compile QuantumOX, use the included **Makefile** or compile manually with:
 
 ```bash
-g++ -std=c++17 -O3 src/board.cpp src/engine.cpp src/search.cpp src/options.cpp src/main.cpp -o quantumox
+g++ -std=c++17 -O3 src/*.cpp -o quantumox
 ```
 
 Run the engine:
