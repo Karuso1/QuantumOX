@@ -18,18 +18,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---- Install tools ----
+      # ---- Install build tools ----
       - name: Install build tools (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y g++ zip tar
+          sudo apt-get install -y g++ tar
 
       - name: Install build tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install zip gnu-tar || true
+        run: brew install gnu-tar || true
 
-      # ---- Detect native arch ----
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install mingw -y || true
+
+      # ---- Detect native architecture ----
       - name: Detect architecture
         id: native
         shell: bash
@@ -56,35 +60,31 @@ jobs:
           echo "Compiling -> bin/${exe_name}"
           g++ -std=c++20 -O3 -Wall -Wextra src/*.cpp -o "bin/${exe_name}"
 
-      # ---- Package ----
-      - name: Package Binary
+      # ---- Package (Linux/macOS only) ----
+      - name: Package Binary (non-Windows)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cd bin
           os="${{ steps.native.outputs.os }}"
           arch="${{ steps.native.outputs.arch }}"
           exe="quantumox-${os}-${arch}"
+          tar -czf "${exe}.tar.gz" "${exe}"
+          rm "${exe}"
+          cd ..
 
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "${exe}.exe" "../${exe}.exe"
-            cd ..
-            powershell Compress-Archive -Path "${exe}.exe" -DestinationPath "${exe}.zip"
-            rm "${exe}.exe"
-            echo "Created ${exe}.zip"
-          else
-            cp "${exe}" "../${exe}"
-            cd ..
-            tar -czf "${exe}.tar.gz" "${exe}"
-            rm "${exe}"
-            echo "Created ${exe}.tar.gz"
-          fi
+      # ---- Verify Output ----
+      - name: Verify Build Output
+        shell: bash
+        run: |
+          echo "Final bin contents:"
+          ls -lh bin/
 
-      # ---- Upload Artifact ----
-      - name: Upload QuantumOX Artifact
+      # ---- Upload Artifacts ----
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: QuantumOX-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
           path: |
-            quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}.zip
-            quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}.tar.gz
-          if-no-files-found: ignore
+            bin/*.exe
+            bin/*.tar.gz
