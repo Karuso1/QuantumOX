@@ -52,6 +52,7 @@ namespace QuantumOX {
         int seldepth{};
         int score{};
         int nodes{};
+        int time_ms{};
         std::vector<int> negamaxpv;
         std::vector<int> minimaxpv;
         std::vector<int> pv;
@@ -118,6 +119,7 @@ namespace QuantumOX {
         std::unordered_map<uint64_t, TTEntry> tt_root;
         
         int nodes{};
+        int elapsed_ms() const;
         std::chrono::steady_clock::time_point start_time;
         std::optional<double> time_limit; // seconds
         std::optional<int> node_limit;
