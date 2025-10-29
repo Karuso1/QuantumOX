@@ -1,0 +1,75 @@
+name: Build QuantumOX
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    name: Compile QuantumOX (C++)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install g++
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: |
+          sudo apt-get update -y || true
+          sudo apt-get install -y g++ || true
+
+      - name: Make scripts executable
+        shell: bash
+        run: chmod +x scripts/natives.sh
+
+      - name: Run Native Detection Script
+        id: native
+        shell: bash
+        run: |
+          output=$(bash scripts/natives.sh)
+          echo "$output"
+          arch=$(echo "$output" | awk '{print $1}')
+          filename=$(echo "$output" | awk '{print $2}')
+          echo "arch=$arch" >> $GITHUB_OUTPUT
+          echo "filename=$filename" >> $GITHUB_OUTPUT
+
+      - name: Build QuantumOX
+        shell: bash
+        run: |
+          mkdir -p bin
+          exe_name="quantumox"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            exe_name="quantumox.exe"
+          fi
+          echo "Building QuantumOX for ${{ steps.native.outputs.arch }}"
+          g++ -std=c++20 -O3 -Wall -Wextra src/*.cpp -o "bin/${exe_name}"
+
+      - name: Package Binary
+        shell: bash
+        run: |
+          cd bin
+          file="${{ steps.native.outputs.filename }}"
+          if [[ "$file" == *.zip ]]; then
+            zip -r "$file" ./*
+          else
+            tar -czf "$file" ./*
+          fi
+          cd ..
+
+      - name: Verify Build Output
+        shell: bash
+        run: |
+          ls -lh bin/
+          file bin/* || true
+
+      - name: Upload QuantumOX Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.native.outputs.filename }}
+          path: bin/${{ steps.native.outputs.filename }}
