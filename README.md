@@ -1,44 +1,51 @@
 # QuantumOX
 
-QuantumOX is a highly advanced Tic-Tac-Toe engine using the UTTTI (Universal Tic-Tac-Toe Interface) protocol. Inspired by my previous engine QuantumKing, it combines a deep minimax/negamax search with alpha-beta pruning to make intelligent and efficient decisions-even in complex board configurations like 3x3, 4x4, or 3x3x3 grids.
+QuantumOX is a high-performance Tic-Tac-Toe engine written in **C++**, implementing the **UTTTI (Universal Tic-Tac-Toe Interface)** protocol. It draws inspiration from my earlier engine *QuantumKing*, and integrates advanced **Minimax** and **Negamax** search algorithms with **alpha-beta pruning**, enabling it to make strategic decisions efficiently—even on complex boards like 3x3, 4x4, or 3x3x3.
 
-QuantumOX analyzes positions thoroughly, predicts wins/losses/draws, and can handle manual or automated moves with precision. It’s designed to be engine-agnostic, letting other programs or interfaces communicate with it via standard UTTTI commands.
+QuantumOX evaluates game states with precision, predicts outcomes (win/loss/draw), and supports both manual and automated play. Its modular design allows other programs or GUIs to interact with it using standard UTTTI commands.
 
-> NOTE: Since there is no Tic-Tac-Toe GUI for UTTTI, play manually in: [Gametable](https://gametable.org/games/tic-tac-toe/) or [Math10](https://www.math10.com/en/math-games/tic-tac-toe/tic-tac-toe.html)
+> **NOTE:** Since there’s no dedicated GUI for UTTTI yet, you can manually play using: [Gametable](https://gametable.org/games/tic-tac-toe/) or [Math10](https://www.math10.com/en/math-games/tic-tac-toe/tic-tac-toe.html)
 
 ## Features
 
-- Advanced Minimax/Negamax search with alpha-beta pruning
-- Iterative deepening with depth control
-- Principal Variation (PV) extraction for move insights
-- Reports `minimaxpv` and `negamaxpv` in info lines for detailed search analysis(new feature):
-  - `minimaxpv` shows the principal variation according to the minimax evaluation
-  - `negamaxpv` shows the principal variation according to the negamax evaluation
-  - `pv` now shows the final selected move sequence after combining insights from both
-- Handles draws, wins, and losses accurately
-- Fully UTTTI-compliant: supports `go depth`, `grid emptygrid`, `setoption`, `stop`, and more
-- Configurable board sizes: 3x3, 4x4, 3x3x3, etc.
-- Lightweight and portable (pure Python)
+* Optimized Minimax/Negamax search with alpha-beta pruning
+* Iterative deepening for adaptive search depth
+* Principal Variation (PV) extraction for detailed move analysis
+* Reports `minimaxpv`, `negamaxpv`, and combined `pv` in info lines:
 
-## Usage
+  * `minimaxpv`: principal variation from the minimax perspective
+  * `negamaxpv`: principal variation from the negamax perspective
+  * `pv`: final hybrid sequence after both analyses
+* Correctly identifies draws, wins, and losses
+* Fully UTTTI-compliant (`go depth`, `grid emptygrid`, `setoption`, `stop`, etc.)
+* Configurable board sizes: 3x3, 4x4, 3x3x3, etc.
+* Lightweight, fast, and portable (pure C++)
 
-Run the engine via Python:
+## Compilation & Usage
+
+To compile QuantumOX, use the included **Makefile** or compile manually with:
 
 ```bash
-python main.py
+g++ -std=c++17 -O3 src/*.cpp -o quantumox
+```
+
+Run the engine:
+
+```bash
+./quantumox
 ```
 
 Basic commands:
 
-- `uttti` - basic handshake
-- `setoption name ... value ...` - edits the existing options
-- `isready` - checks if the engine is ready
-- `utttinewgame` - resets the tic tac toe board
-- `grid emptygrid fill ...` - fills the O/X.
-- `go` - starts the search, can add `depth {depth}` after it for customized depth.
-- `stop` - stop current search
-- `quit` / `exit` - exit engine
-- `help` - shows commands
+* `uttti` - initialize the handshake
+* `setoption name ... value ...` - edit existing options
+* `isready` - check engine readiness
+* `utttinewgame` - start a new game
+* `grid emptygrid fill ...` - fill the board with moves
+* `go depth {n}` - start searching up to depth `n`
+* `stop` - stop current search
+* `quit` / `exit` - exit engine
+* `help` - show command list
 
 Example UTTTI session:
 
@@ -94,21 +101,27 @@ bestmove 5 ponder 1
 
 ## Installation
 
-QuantumOX is pure Python - no extra dependencies are needed. Clone the repo and run:
+Clone the repository:
 
-```
+```bash
 git clone https://github.com/Karuso1/QuantumOX.git
 cd QuantumOX
-python main.py
+make -j build ARCH=x86-64 # only a place holder, you can see help when typing make
+```
+
+Run the compiled engine:
+
+```bash
+./quantumox
 ```
 
 ## About
 
-QuantumOX is a personal project by **Kartik**. It's a proof-of-concept that even simple games like Tic-Tac-Toe can benefit from serious AI techniques.
+QuantumOX is a personal project by **Kartik**. It’s a demonstration that even simple games like Tic-Tac-Toe can showcase the depth and efficiency of well-designed AI search algorithms.
 
 ## License
 
-QuantumOX is released under the **GPL-3.0 License.**
+QuantumOX is licensed under the **GPL-3.0 License.**
 You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, as long as you include the original copyright notice.
 
-For full license text, see [LICENSE](https://github.com/Karuso1/QuantumOX/blob/main/LICENSE)
+For the full license text, see [LICENSE](https://github.com/Karuso1/QuantumOX/blob/main/LICENSE).
