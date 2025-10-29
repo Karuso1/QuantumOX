@@ -1,0 +1,37 @@
+# CITATION.cff
+cff-version: 1.2.0
+title: "QuantumOX: A UTTTI-compatible Tic Tac Toe Engine"
+message: "If you use this software, please cite it using the metadata below."
+type: software
+
+authors:
+  - family-names: Pawar
+    given-names: Kartik
+
+repository-code: "https://github.com/Karuso1/QuantumOX"
+url: "https://github.com/Karuso1/QuantumOX"
+license: GPL-3.0
+version: "1.0.0"
+date-released: "2025-10-29"
+keywords:
+  - Tic Tac Toe
+  - UTTTI
+  - Game Engine
+  - QuantumOX
+  - QuantumKing
+  - C++
+
+abstract: >
+  QuantumOX is an advanced Tic Tac Toe engine that supports the Universal Tic Tac Toe Interface (UTTTI).
+  It is part of the QuantumKing ecosystem and is designed with a focus on performance, search optimization,
+  and platform compatibility. Built with modern C++ standards and optimized heuristics.
+
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Pawar
+      given-names: Kartik
+  title: "QuantumOX: A Cross-Platform UTTTI-Compatible Tic Tac Toe Engine"
+  journal: "QuantumKing Organization"
+  year: 2025
+  url: "https://github.com/Karuso1/QuantumOX"
