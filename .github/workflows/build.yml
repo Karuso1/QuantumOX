@@ -84,7 +84,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QuantumOX-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
+          name: quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
           path: |
             bin/*.exe
             bin/*.tar.gz
