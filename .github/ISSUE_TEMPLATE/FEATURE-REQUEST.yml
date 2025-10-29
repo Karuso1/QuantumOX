@@ -1,0 +1,70 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for QuantumOX
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Feature Request
+        Use this template to propose improvements, enhancements, or new capabilities for QuantumOX.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Briefly summarize the feature you’d like to see added.
+      placeholder: "Example: Add transposition table visualization to debug search"
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Explain why this feature is useful or important. What problem does it solve?
+      placeholder: "Describe your reasoning here..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how you’d like this feature implemented. Be as detailed as possible.
+      placeholder: "Describe your proposed implementation or design idea..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Have you thought of other ways to solve this? Mention them here.
+      placeholder: "Alternative solutions or workarounds..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: affected-module
+    attributes:
+      label: Affected Module
+      description: Select which part of the QuantumOX engine this feature mainly concerns.
+      options:
+        - search
+        - engine
+        - board
+        - options
+        - utils
+        - other
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Include references, links, or screenshots that help explain your request.
+      placeholder: "Any extra context or related information..."
+    validations:
+      required: false
