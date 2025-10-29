@@ -29,7 +29,7 @@ namespace QuantumOX {
 
     // Engine identity
     inline constexpr auto ENGINE_NAME = "QuantumOX";
-    inline constexpr auto ENGINE_VERSION = "1.0";
+    inline constexpr auto ENGINE_VERSION = "1.1";
     inline constexpr auto ENGINE_AUTHOR = "Kartik";
     inline constexpr auto UTTTI_VERSION = "0.1";
     
