@@ -53,13 +53,18 @@ void handle_uttti(QuantumOXEngine& engine) {
         const auto& meta = kv.second;
 
         std::ostringstream line;
-        line << "option name " << name << " type " << meta.at("type");
+        line << "option name " << name
+             << " type " << meta.at("type");
 
+        // if option has default, print it (for any type)
+        if (meta.find("default") != meta.end())
+            line << " default " << meta.at("default");
+
+        // print other common params depending on type
         if (meta.at("type") == "spin") {
             if (meta.find("min") != meta.end()) line << " min " << meta.at("min");
             if (meta.find("max") != meta.end()) line << " max " << meta.at("max");
         } else if (meta.at("type") == "combo") {
-            if (meta.find("default") != meta.end()) line << " default " << meta.at("default");
             if (meta.find("var") != meta.end()) line << " " << meta.at("var");
         }
 
