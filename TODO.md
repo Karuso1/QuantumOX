@@ -8,9 +8,7 @@
   - Before printing any `info depth` lines after a `go` command, the engine should display:
     ```
     info string OXNN evaluation using <oxnn file name> (<file size>, <model information>)
-    info string Using 1 thread
     ```
-    *(Use plural “threads” if more than one.)*
   - OXNN model filenames must follow this format:
     ```
     nn-<first 12 digits of SHA256 hash of the OXNN file’s binary contents>.oxnn
