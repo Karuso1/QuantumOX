@@ -35,6 +35,7 @@ namespace QuantumOX {
     
     // Default options
     inline constexpr auto DEFAULT_GRID = "3x3";
+    inline constexpr auto DEFAULT_THREADS = 1; // configure the default threads if you want
     inline const std::array<std::string, 4> SUPPORTED_GRIDS = {"3x3", "4x4", "5x5", "3x3x3"};
     
     // Player/square symbols
@@ -67,7 +68,7 @@ namespace QuantumOX {
     inline const std::array<std::string, 4> SEARCH_LIMITS = {"depth", "movetime", "nodes", "infinite"};
     
     // Default search settings
-    inline constexpr int DEFAULT_MAX_DEPTH = 6;
+    inline constexpr int DEFAULT_MAX_DEPTH = 80;
     inline constexpr int DEFAULT_TIME_MS = 1000;
     
     // Misc / formatting
