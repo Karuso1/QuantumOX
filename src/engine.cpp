@@ -93,25 +93,25 @@ GoResult QuantumOXEngine::go(std::optional<int> depth,
     out.raw = res;
 
     // Build info lines
-    for (const InfoRecord& d : res.infos) {
-        std::ostringstream oss;
-        // Build PV strings
-        std::string pv_main_str, neg_pv_str, min_pv_str;
-        for (size_t i = 0; i < d.pv.size(); ++i) { if (i) pv_main_str += " "; pv_main_str += std::to_string(d.pv[i]); }
-        for (size_t i = 0; i < d.negamaxpv.size(); ++i) { if (i) neg_pv_str += " "; neg_pv_str += std::to_string(d.negamaxpv[i]); }
-        for (size_t i = 0; i < d.minimaxpv.size(); ++i) { if (i) min_pv_str += " "; min_pv_str += std::to_string(d.minimaxpv[i]); }
-
-        oss << "info depth " << d.depth
-            << " seldepth " << d.seldepth
-            << " score " << d.score
-            << " nodes " << d.nodes
-            << " minimaxpv " << min_pv_str
-            << " negamaxpv " << neg_pv_str
-            << " time " << d.time_ms
-            << " pv " << pv_main_str;
-
-        out.info_lines.push_back(oss.str());
-    }
+    // for (const InfoRecord& d : res.infos) {
+    //     std::ostringstream oss;
+    //     // Build PV strings
+    //     std::string pv_main_str, neg_pv_str, min_pv_str;
+    //     for (size_t i = 0; i < d.pv.size(); ++i) { if (i) pv_main_str += " "; pv_main_str += std::to_string(d.pv[i]); }
+    //     for (size_t i = 0; i < d.negamaxpv.size(); ++i) { if (i) neg_pv_str += " "; neg_pv_str += std::to_string(d.negamaxpv[i]); }
+    //     for (size_t i = 0; i < d.minimaxpv.size(); ++i) { if (i) min_pv_str += " "; min_pv_str += std::to_string(d.minimaxpv[i]); }
+    // 
+    //     oss << "info depth " << d.depth
+    //         << " seldepth " << d.seldepth
+    //         << " score " << d.score
+    //         << " nodes " << d.nodes
+    //         << " minimaxpv " << min_pv_str
+    //         << " negamaxpv " << neg_pv_str
+    //         << " time " << d.time_ms
+    //         << " pv " << pv_main_str;
+    // 
+    //     out.info_lines.push_back(oss.str());
+    // }
 
     // Bestmove
     std::optional<int> bestmove = res.bestmove;
