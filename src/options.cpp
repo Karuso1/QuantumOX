@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <stdexcept>
 #include <sstream>
+#include <thread>     // for hardware_concurrency
+#include <cstdlib>    // for std::stoi
 
 namespace QuantumOX {
 
@@ -76,6 +78,33 @@ namespace QuantumOX {
         }
         return sv;
     }
+
+    // Validate Threads: must be integer between 1 and 512 (inclusive)
+    std::string validate_threads(const std::string& v) {
+        int n = 0;
+        try {
+            size_t idx = 0;
+            n = std::stoi(v, &idx);
+            if (idx != v.size()) {
+                throw std::invalid_argument("extra characters");
+            }
+        } catch (const std::exception&) {
+            throw std::runtime_error("Threads expects an integer value");
+        }
+
+        if (n < 1 || n > 512) {
+            std::ostringstream oss;
+            oss << "Threads must be between 1 and 512 (requested " << n << ")";
+            throw std::runtime_error(oss.str());
+        }
+        return std::to_string(n);
+    }
+    
+    // compute default threads as hardware_concurrency (fallback to 1)
+    static unsigned int DEFAULT_THREADS = []() -> unsigned int {
+        unsigned int hw = std::thread::hardware_concurrency();
+        return hw == 0 ? 1u : hw;
+    }();
     
     // --- default registry -------------------------------------------------------
     std::unordered_map<std::string, Option> _registry = {
@@ -84,7 +113,10 @@ namespace QuantumOX {
                         validate_grid)},
         {"FirstPlayer", Option("FirstPlayer", "combo", std::string(1, SYMBOL_X),
                            "Symbol for the player who moves first: 'X' or 'O'.",
-                           validate_firstplayer)}
+                           validate_firstplayer)},
+        {"Threads", Option("Threads", "spin", std::to_string(DEFAULT_THREADS),
+                           "Number of worker threads used for search (1-512).",
+                           validate_threads)}
     };
     
     // --- public API -------------------------------------------------------------
@@ -130,6 +162,15 @@ namespace QuantumOX {
                 meta["type"] = "combo";
                 meta["default"] = opt.default_value;
                 meta["var"] = "var X var O";
+            } else if (opt.name == "Threads") {
+                meta["type"] = "spin";
+                meta["default"] = opt.default_value;
+                // expose a friendly var/min/max for UIs
+                meta["min"] = "1";
+                meta["max"] = "512";
+                std::ostringstream varss;
+                varss << "min 1 max 512";
+                meta["var"] = varss.str();
             } else {
                 meta["type"] = opt.type;
                 meta["default"] = opt.default_value;
