@@ -100,12 +100,6 @@ namespace QuantumOX {
         return std::to_string(n);
     }
     
-    // compute default threads as hardware_concurrency (fallback to 1)
-    static unsigned int DEFAULT_THREADS = []() -> unsigned int {
-        unsigned int hw = std::thread::hardware_concurrency();
-        return hw == 0 ? 1u : hw;
-    }();
-    
     // --- default registry -------------------------------------------------------
     std::unordered_map<std::string, Option> _registry = {
         {"Grid", Option("Grid", "combo", DEFAULT_GRID,
