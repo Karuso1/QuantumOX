@@ -13,8 +13,30 @@ jobs:
     name: Build and Release QuantumOX
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        arch:
+          - x86-64-avx512icl
+          - x86-64-vnni512
+          - x86-64-avx512
+          - x86-64-avxvnni
+          - x86-64-bmi2
+          - x86-64-avx2
+          - x86-64-sse41-popcnt
+          - x86-64
+          - x86-32
+          - ppc-64-vsx
+          - ppc-64-altivec
+          - armv8-dotprod
+          - armv8
+          - armv7-neon
+          - armv7
+          - loongarch64-lasx
+          - loongarch64-lsx
+          - loongarch64
+          - apple-silicon
+          - riscv64
 
     steps:
       - name: Checkout repository
@@ -25,51 +47,37 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt update -y
-          sudo apt install -y g++ zip tar
+          sudo apt install -y g++ make zip tar
 
       - name: Install build tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install zip gnu-tar || true
+        run: brew install make zip gnu-tar || true
 
       - name: Install build tools (Windows)
         if: runner.os == 'Windows'
-        run: choco install zip -y || true
+        run: choco install make zip -y || true
 
-      # ---- Detect architecture ----
-      - name: Detect native arch
-        id: native
-        shell: bash
-        run: |
-          arch=$(uname -m)
-          os=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
-          if [[ "$arch" == "x86_64" ]]; then
-            arch="x86-64"
-          fi
-          echo "os=$os" >> $GITHUB_OUTPUT
-          echo "arch=$arch" >> $GITHUB_OUTPUT
-
-      # ---- Build ----
+      # ---- Build QuantumOX ----
       - name: Build QuantumOX
         shell: bash
         run: |
           mkdir -p bin
-          os=${{ steps.native.outputs.os }}
-          arch=${{ steps.native.outputs.arch }}
-          exe="quantumox-${os}-${arch}"
+          echo "Building for ${{ matrix.arch }} on ${{ runner.os }}"
+          make -j build ARCH=${{ matrix.arch }}
+          # Move built binary to bin/ with proper naming
+          exe="quantumox-${{ runner.os | toLowerCase }}-${{ matrix.arch }}"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            exe="${exe}.exe"
+            mv "bin/quantumox.exe" "bin/${exe}.exe" 2>/dev/null || mv "quantumox.exe" "bin/${exe}.exe"
+          else
+            mv "bin/quantumox" "bin/${exe}" 2>/dev/null || mv "quantumox" "bin/${exe}"
           fi
-          echo "Compiling -> bin/${exe}"
-          g++ -std=c++20 -O3 -Wall -Wextra src/*.cpp -o "bin/${exe}"
 
       # ---- Package ----
       - name: Package Executable
         shell: bash
         run: |
           cd bin
-          os="${{ steps.native.outputs.os }}"
-          arch="${{ steps.native.outputs.arch }}"
-          exe="quantumox-${os}-${arch}"
+          exe="quantumox-${{ runner.os | toLowerCase }}-${{ matrix.arch }}"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             zip "../${exe}.zip" "${exe}.exe"
           else
@@ -77,11 +85,11 @@ jobs:
           fi
           cd ..
 
-      # ---- Upload Release Asset ----
+      # ---- Upload to Release ----
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}.*
+            quantumox-${{ runner.os | toLowerCase }}-${{ matrix.arch }}.*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
