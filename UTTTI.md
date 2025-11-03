@@ -26,6 +26,7 @@ utttiok
 
 ### Notes
 
+* Id and author are must, **options** are optional.
 * The **options** are user-configurable settings that can vary between engines.
 * The **OXNN** option enables a neural evaluator module for board scoring.
 * Blank lines between sections are optional.
