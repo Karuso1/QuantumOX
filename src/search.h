@@ -57,8 +57,9 @@ namespace QuantumOX {
         int depth{}; 
         int seldepth{}; 
         int score{}; 
-        int nodes{}; 
-        int time_ms{}; 
+        uint64_t nodes{}; 
+        uint64_t time_ms{}; 
+        uint64_t nps{};
         std::vector<int> negamaxpv;
         std::vector<int> minimaxpv;
         std::vector<int> pv;
@@ -92,6 +93,9 @@ namespace QuantumOX {
         
     private:
         friend struct PlyGuard;
+        friend std::vector<int> order_moves_for_negamax(Searcher*, Board&, std::vector<int>, uint64_t, int);
+        friend std::vector<int> order_moves_for_minimax(Searcher*, Board&, std::vector<int>, uint64_t, int);
+
 
         // ----------------- Internal helpers -----------------------------
         // Note: ThreadPool is forward-declared above; search.cpp provides the definition.
