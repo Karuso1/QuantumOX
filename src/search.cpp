@@ -37,6 +37,7 @@
 #include <atomic>
 #include <memory>
 #include <shared_mutex> // for shared mutex
+#include <cmath>
 
 using namespace std::chrono;
 
@@ -187,25 +188,25 @@ namespace QuantumOX {
 
     // helpers for shared TT access
     static bool shared_tt_plain_get(uint64_t k, TTEntry &out) {
-        std::shared_lock lock(shared_tt_plain_mtx);
+        std::shared_lock<std::shared_mutex> lock(shared_tt_plain_mtx);
         auto it = shared_tt_plain.find(k);
         if (it == shared_tt_plain.end()) return false;
         out = it->second;
         return true;
     }
     static void shared_tt_plain_store(uint64_t k, const TTEntry &e) {
-        std::unique_lock lock(shared_tt_plain_mtx);
+        std::unique_lock<std::shared_mutex> lock(shared_tt_plain_mtx);
         shared_tt_plain[k] = e;
     }
     static bool shared_tt_root_get(uint64_t k, TTEntry &out) {
-        std::shared_lock lock(shared_tt_root_mtx);
+        std::shared_lock<std::shared_mutex> lock(shared_tt_root_mtx);
         auto it = shared_tt_root.find(k);
         if (it == shared_tt_root.end()) return false;
         out = it->second;
         return true;
     }
     static void shared_tt_root_store(uint64_t k, const TTEntry &e) {
-        std::unique_lock lock(shared_tt_root_mtx);
+        std::unique_lock<std::shared_mutex> lock(shared_tt_root_mtx);
         shared_tt_root[k] = e;
     }
 
@@ -214,7 +215,7 @@ namespace QuantumOX {
         return key ^ (static_cast<uint64_t>(static_cast<unsigned char>(root_char)) << 56) ^
                0x9e3779b97f4a7c15ULL;
     }
-    
+
     static uint64_t hash_string_fallback(const std::string& s) {
         return static_cast<uint64_t>(std::hash<std::string>{}(s));
     }
@@ -226,6 +227,23 @@ namespace QuantumOX {
         ~PlyGuard() { s->pop_ply(); }
     }
     ;
+
+    // ---------------- parameters for heuristics (tweakable) ------------------
+    namespace {
+        constexpr int INF = 10000000;
+        constexpr int ASP_WINDOW = 50;
+        constexpr int LMR_DEPTH_THRESHOLD = 3; // only reduce when depth > this
+        // base reduction formula: reduce = 1 + log(depth) approx
+        inline int lmr_reduction(int depth, int move_index) {
+            // more reduction for later moves and deeper depth
+            if (depth <= LMR_DEPTH_THRESHOLD) return 0;
+            double d = std::log2(static_cast<double>(depth));
+            int r = 1 + static_cast<int>(d * (1.0 + move_index / 6.0));
+            // clamp
+            if (r >= depth) r = depth - 1;
+            return r;
+        }
+    }
 
     // ---------------- Searcher implementation -------------------------------
     Searcher::Searcher()
@@ -253,20 +271,14 @@ namespace QuantumOX {
             return 0;
         }
         // ensure unmake
+        int val = 0;
         try {
-            int val = 0;
-            try {
-                val = board.evaluate(for_player);
-            } catch (...) {
-                val = 0;
-            }
-            board.unmake_move(mv);
-            return val;
+            val = board.evaluate(for_player);
         } catch (...) {
-            // Attempt to unmake but ignore failures
-            try { board.unmake_move(mv); } catch(...) {}
-            return 0;
+            val = 0;
         }
+        try { board.unmake_move(mv); } catch(...) {}
+        return val;
     }
 
     // ---------- helper: elapsed and time checks -----------------------------
@@ -285,9 +297,85 @@ namespace QuantumOX {
 
     bool Searcher::nodes_exceeded() const { if (!node_limit.has_value()) return false; return nodes >= *node_limit; }
 
-    bool Searcher::should_abort() const { return time_exceeded() || nodes_exceeded(); }
+    bool Searcher::should_abort() const { return abort_flag || time_exceeded() || nodes_exceeded(); }
 
     void Searcher::request_abort() { abort_flag = true; }
+
+    // ---------- Utility: order moves with advanced heuristics ---------------
+    // returns vector of moves sorted (best first) but DOES NOT modify board.
+    std::vector<int> order_moves_for_negamax(Searcher* s, Board& board, std::vector<int> moves, uint64_t k, int depth) {
+        struct MoveKey { int mv; double key; size_t orig; };
+        std::vector<MoveKey> mk;
+        mk.reserve(moves.size());
+
+        // read TT move and killer/history
+        std::optional<int> tt_move = std::nullopt;
+        {
+            TTEntry e;
+            if (shared_tt_plain_get(k, e)) tt_move = e.best_move;
+        }
+        for (size_t i = 0; i < moves.size(); ++i) {
+            int mv = moves[i];
+            double score = 0.0;
+            if (tt_move && *tt_move == mv) score += 1e8;
+            auto itkm = s->killer_moves.find(depth);
+            if (itkm != s->killer_moves.end()) {
+                for (int km : itkm->second) if (km == mv) score += 5000.0;
+            }
+            auto ith = s->history.find(mv);
+            if (ith != s->history.end()) score += static_cast<double>(ith->second);
+            // quick heuristic: immediate winning move is huge priority
+            try {
+                board.make_move(mv);
+                std::string prev = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
+                if (board.is_win(prev)) score += 1e6;
+                board.unmake_move(mv);
+            } catch(...) {}
+            // small bias to stabilize order
+            score += -static_cast<double>(mv) * 0.01;
+            mk.push_back({mv, score, i});
+        }
+        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){ return a.key > b.key; });
+        std::vector<int> out; out.reserve(mk.size());
+        for (auto &m : mk) out.push_back(m.mv);
+        return out;
+    }
+
+    std::vector<int> order_moves_for_minimax(Searcher* s, Board& board, std::vector<int> moves, uint64_t tk, int depth) {
+        struct MoveKey { int mv; double key; size_t orig; };
+        std::vector<MoveKey> mk;
+        mk.reserve(moves.size());
+
+        std::optional<int> tt_move = std::nullopt;
+        {
+            TTEntry e;
+            if (shared_tt_root_get(tk, e)) tt_move = e.best_move;
+        }
+
+        for (size_t i = 0; i < moves.size(); ++i) {
+            int mv = moves[i];
+            double score = 0.0;
+            if (tt_move && *tt_move == mv) score += 1e8;
+            auto itkm = s->killer_moves.find(depth);
+            if (itkm != s->killer_moves.end()) {
+                for (int km : itkm->second) if (km == mv) score += 5000.0;
+            }
+            auto ith = s->history.find(mv);
+            if (ith != s->history.end()) score += static_cast<double>(ith->second);
+            try {
+                board.make_move(mv);
+                std::string prev = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
+                if (board.is_win(prev)) score += 1e6;
+                board.unmake_move(mv);
+            } catch(...) {}
+            score += -static_cast<double>(mv) * 0.01;
+            mk.push_back({mv, score, i});
+        }
+        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){ return a.key > b.key; });
+        std::vector<int> out; out.reserve(mk.size());
+        for (auto &m : mk) out.push_back(m.mv);
+        return out;
+    }
 
     // ---------------- core search loop (iterative deepening) ----------------
     Searcher::SearchResult Searcher::search(Board& board,
@@ -295,7 +383,7 @@ namespace QuantumOX {
                                            std::optional<int> time_ms_opt,
                                            std::optional<int> nodes_limit_opt) {
         int max_depth = max_depth_opt.value_or(DEFAULT_MAX_DEPTH);
-                                        
+
         nodes = 0;
         current_seldepth = 0;
         max_seldepth = 0;
@@ -303,83 +391,74 @@ namespace QuantumOX {
         time_limit = time_ms_opt ? std::optional<double>(*time_ms_opt / 1000.0) : std::nullopt;
         node_limit = nodes_limit_opt;
         abort_flag = false;
-                                        
+
         std::optional<int> best_move = std::nullopt;
         int best_score = 0;
         std::vector<int> best_pv;
         std::vector<InfoRecord> infos;
 
-        // get pool from manager (this will respect the Threads option and recreate pool if needed)
         auto pool = ThreadPoolManager::instance().get_pool();
+        unsigned int threads = ThreadPoolManager::instance().count();
+        std::cout << "info string Using " << threads << " thread" << (threads == 1 ? "" : "s") << std::endl;
 
         uint64_t key_plain = key(board);
-        std::string root_player = board.get_side_to_move(); // requires accessor in Board
-                                        
-        const int ASP_WINDOW = 50;
+        std::string root_player = board.get_side_to_move();
+
         int prev_neg_score = 0;
         int prev_min_score = 0;
-                                        
+
         for (int depth = 1; depth <= max_depth; ++depth) {
             if (should_abort()) break;
 
-            // reset seldepth counters for this iteration (report per-iteration seldepth)
             max_seldepth = 0;
             current_seldepth = 0;
 
-            // ----------- NEGAMAX pass (root-level parallel per-move) ------------
-            int nodes_before = nodes;
             int alpha, beta;
             if (depth > 1) {
                 alpha = prev_neg_score - ASP_WINDOW;
-                beta = prev_neg_score + ASP_WINDOW;
+                beta  = prev_neg_score + ASP_WINDOW;
             } else {
-                alpha = -10000000;
-                beta = 10000000;
+                alpha = -INF; beta = INF;
             }
 
-            // we'll call the parallelized helper which uses pool
             int neg_score = negamax_root(board, depth, alpha, beta, depth, pool);
 
+            // aspiration fail -> full-window re-search
             if (depth > 1 && (neg_score <= alpha || neg_score >= beta)) {
-                alpha = -10000000; beta = 10000000;
+                alpha = -INF; beta = INF;
                 neg_score = negamax_root(board, depth, alpha, beta, depth, pool);
             }
-
-            int neg_nodes = nodes - nodes_before;
             prev_neg_score = neg_score;
 
-            if (abort_flag) break;
+            if (should_abort()) break;
 
-            // ---------------- negamax PV & move ----------------
+            // pickup PV/move from TT plain
             std::optional<int> neg_move = std::nullopt;
             std::vector<int> neg_pv;
             {
                 TTEntry e;
                 if (shared_tt_plain_get(key_plain, e)) neg_move = e.best_move;
             }
-            try { neg_pv = build_pv(board); } 
-            catch(...) { if (neg_move) neg_pv = {*neg_move}; }
+            try { neg_pv = build_pv(board); } catch(...) { if (neg_move) neg_pv = {*neg_move}; }
 
             if (should_abort()) break;
 
-            // ---------------- MINIMAX pass (root-level parallel per-move) ----------------
-            int nodes_before_min = nodes;
+            // MINIMAX pass
             if (depth > 1) {
                 alpha = prev_min_score - ASP_WINDOW;
-                beta = prev_min_score + ASP_WINDOW;
+                beta  = prev_min_score + ASP_WINDOW;
             } else {
-                alpha = -10000000; beta = 10000000;
+                alpha = -INF; beta = INF;
             }
 
             int min_score = minimax_root(board, depth, alpha, beta, depth, pool);
             if (depth > 1 && (min_score <= alpha || min_score >= beta)) {
-                alpha = -10000000; beta = 10000000;
+                alpha = -INF; beta = INF;
                 min_score = minimax_root(board, depth, alpha, beta, depth, pool);
             }
-            int min_nodes = nodes - nodes_before_min;
             prev_min_score = min_score;
 
-            if (abort_flag) break;
+            if (should_abort()) break;
 
             std::optional<int> min_move = std::nullopt;
             std::vector<int> min_pv;
@@ -393,7 +472,7 @@ namespace QuantumOX {
                 try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
             }
 
-            // ---------------- pick between negamax and minimax ----------------
+            // decide
             std::string selector = "negamax";
             int chosen_score = neg_score;
             std::optional<int> chosen_move = neg_move;
@@ -404,11 +483,9 @@ namespace QuantumOX {
                 chosen_score = min_score;
                 chosen_move = min_move;
                 chosen_pv = min_pv;
-            } else if (min_score == neg_score && min_nodes < neg_nodes) {
-                selector = "minimax";
-                chosen_score = min_score;
-                chosen_move = min_move;
-                chosen_pv = min_pv;
+            } else if (min_score == neg_score) {
+                // prefer the one with smaller node count to reduce noise
+                // (we didn't calculate node counts separately here; keep negamax preference unless minimax stored better move)
             }
 
             if (chosen_move.has_value()) {
@@ -417,13 +494,14 @@ namespace QuantumOX {
                 best_pv = chosen_pv;
             }
 
-            // --- record info (also push to infos vector) ---
+            // record info
             InfoRecord ir;
             ir.depth = depth;
             ir.seldepth = max_seldepth;
             ir.score = best_score;
             ir.nodes = nodes;
             ir.time_ms = elapsed_ms();
+            ir.nps = (ir.time_ms > 0) ? (nodes * 1000LL / ir.time_ms) : 0;
             ir.negamaxpv = neg_pv;
             ir.minimaxpv = min_pv;
             ir.pv = best_pv;
@@ -434,6 +512,7 @@ namespace QuantumOX {
                 << " seldepth " << max_seldepth
                 << " score " << best_score
                 << " nodes " << nodes
+                << " nps " << ir.nps
                 << " minimaxpv";
             for (int mv : min_pv) oss << " " << mv;
             oss << " negamaxpv";
@@ -455,7 +534,6 @@ namespace QuantumOX {
     }
 
     // ---------- negamax root (parallelized per-root-move) --------------------
-    // helper result type for tasks
     struct RootEvalResult {
         int move;
         int score;
@@ -464,7 +542,6 @@ namespace QuantumOX {
         int seldepth;
     };
 
-    // this variant receives a pool to submit tasks into
     int Searcher::negamax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool) {
         ++nodes;
         PlyGuard pg(this);
@@ -479,39 +556,32 @@ namespace QuantumOX {
             if (shared_tt_plain_get(k, e)) tt_move = e.best_move;
         }
 
-        if (tt_move) {
-            auto f = std::find(moves.begin(), moves.end(), *tt_move);
-            if (f != moves.end()) { moves.erase(f); moves.insert(moves.begin(), *tt_move); }
-        }
+        // advanced ordering (local)
+        std::vector<int> ordered = order_moves_for_negamax(this, board, moves, k, depth);
 
         std::vector<std::future<RootEvalResult>> futures;
-        futures.reserve(moves.size());
+        futures.reserve(ordered.size());
 
-        // For each root move, submit a task which runs negamax on the child position using a local Searcher
-        for (int mv : moves) {
-            // capture by value the mv and alpha/beta
+        for (int mv : ordered) {
             futures.emplace_back(pool->submit([this, board, mv, depth, alpha, beta, root_depth, k]() -> RootEvalResult {
                 RootEvalResult rr;
                 rr.move = mv;
                 rr.nodes = 0;
                 rr.seldepth = 0;
-                rr.score = -10000000;
+                rr.score = -INF;
                 try {
                     Board local_board = board; // copy
                     try { local_board.make_move(mv); } catch(...) { return rr; }
 
-                    // create a local Searcher to avoid sharing per-search state across threads.
-                    // tt accesses inside s_local call shared TT helpers via the same member functions.
                     Searcher s_local;
                     s_local.start_time = this->start_time;
                     s_local.time_limit = this->time_limit;
                     s_local.node_limit = this->node_limit;
 
-                    // run the recursive negamax from this child (s_local interacts with shared TT).
+                    // principal variation search style:
                     int child_score = -s_local.negamax(local_board, depth - 1, -beta, -alpha, root_depth);
                     rr.score = child_score;
 
-                    // build pv: root move + child's pv (s_local.build_pv will read shared TT)
                     rr.pv.clear();
                     rr.pv.push_back(mv);
                     try {
@@ -526,26 +596,23 @@ namespace QuantumOX {
             }));
         }
 
-        int best_score = -10000000;
+        int best_score = -INF;
         std::optional<int> best_move = std::nullopt;
 
-        // collect results
         for (auto &fut : futures) {
             try {
                 RootEvalResult rr = fut.get();
-                // aggregate nodes and seldepth
                 try { this->nodes += rr.nodes; } catch(...) {}
                 if (rr.seldepth > this->max_seldepth) this->max_seldepth = rr.seldepth;
                 if (rr.score > best_score) {
                     best_score = rr.score;
                     best_move = rr.move;
-                    // store PV info into shared TT for this root position (best child)
-                    TTEntry e;
-                    e.key = k; e.depth = depth; e.score = best_score; e.flag = TTFlag::EXACT; e.best_move = best_move;
+                    // store best child in plain TT
+                    TTEntry e; e.key = k; e.depth = depth; e.score = best_score; e.flag = TTFlag::EXACT; e.best_move = best_move;
                     shared_tt_plain_store(k, e);
                 }
             } catch(...) {
-                // ignore individual task failure
+                // ignore individual failure
             }
             if (should_abort()) { abort_flag = true; break; }
         }
@@ -554,6 +621,7 @@ namespace QuantumOX {
         return best_score;
     }
 
+    // ---------- negamax with PVS + LMR -------------------------------------
     int Searcher::negamax(Board& board, int depth, int alpha, int beta, int root_depth) {
         ++nodes;
         PlyGuard pg(this);
@@ -568,6 +636,7 @@ namespace QuantumOX {
             if (entry.flag == TTFlag::UPPER && entry.score <= alpha) return entry.score;
         }
 
+        // terminal / quiescence (board small so evaluate directly at depth 0)
         if (depth == 0 || board.is_win(std::string(1, SYMBOL_X)) || board.is_win(std::string(1, SYMBOL_O)) || board.is_draw()) {
             int val = evaluate_terminal_or_heuristic(board);
             TTEntry e; e.key = k; e.depth = depth; e.score = val; e.flag = TTFlag::EXACT; e.best_move = std::nullopt;
@@ -583,39 +652,63 @@ namespace QuantumOX {
             return val;
         }
 
+        // order moves
+        std::vector<int> ordered = order_moves_for_negamax(this, board, moves, k, depth);
+
         std::optional<int> tt_move_local = std::nullopt;
         if (shared_tt_plain_get(k, entry)) tt_move_local = entry.best_move;
-        if (tt_move_local) {
-            auto f = std::find(moves.begin(), moves.end(), *tt_move_local);
-            if (f != moves.end()) { moves.erase(f); moves.insert(moves.begin(), *tt_move_local); }
-        }
 
-        int best_score = -10000000;
+        int best_score = -INF;
         std::optional<int> best_move = std::nullopt;
         int original_alpha = alpha;
 
-        for (int mv : moves) {
+        bool first = true;
+        int move_index = 0;
+        for (int mv : ordered) {
             if (should_abort()) { abort_flag = true; break; }
+            ++move_index;
             try { board.make_move(mv); } catch(...) { continue; }
-            int score = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+
+            int score;
+            if (first) {
+                // full window for first move
+                score = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+            } else {
+                // LMR + PVS: do a reduced/zero window search then re-search if it raises alpha
+                int reduction = lmr_reduction(depth, move_index);
+                int reduced_depth = std::max(0, depth - 1 - reduction);
+                // try reduced (or null-window) search
+                score = -negamax(board, reduced_depth, -alpha - 1, -alpha, root_depth);
+                if (score > alpha && score < beta) {
+                    // re-search full depth
+                    score = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+                }
+            }
+
             try { board.unmake_move(mv); } catch(...) {}
+
+            first = false;
 
             if (score > best_score) { best_score = score; best_move = mv; }
             alpha = std::max(alpha, score);
             if (alpha >= beta) {
-                // Lower bound
+                // fail-high -> update killer & history
+                auto &kms = killer_moves[depth];
+                if (std::find(kms.begin(), kms.end(), mv) == kms.end()) { kms.push_back(mv); if (kms.size() > 2) kms.erase(kms.begin()); }
+                history[mv] += (1 << depth);
+
                 TTEntry e; e.key = k; e.depth = depth; e.score = best_score; e.flag = TTFlag::LOWER; e.best_move = best_move;
                 shared_tt_plain_store(k, e);
-                break;
+                return best_score;
             }
         }
 
-        TTFlag flag;
-        if (best_score <= original_alpha) flag = TTFlag::UPPER;
-        else if (best_score >= beta) flag = TTFlag::LOWER;
-        else flag = TTFlag::EXACT;
+        TTFlag final_flag;
+        if (best_score <= original_alpha) final_flag = TTFlag::UPPER;
+        else if (best_score >= beta) final_flag = TTFlag::LOWER;
+        else final_flag = TTFlag::EXACT;
 
-        TTEntry e; e.key = k; e.depth = depth; e.score = best_score; e.flag = flag; e.best_move = best_move;
+        TTEntry e; e.key = k; e.depth = depth; e.score = best_score; e.flag = final_flag; e.best_move = best_move;
         shared_tt_plain_store(k, e);
         return best_score;
     }
@@ -625,7 +718,7 @@ namespace QuantumOX {
         ++nodes;
         PlyGuard pg(this);
 
-        std::string root_player = board.get_side_to_move(); // requires Board accessor
+        std::string root_player = board.get_side_to_move();
         uint64_t key_plain = key(board);
         uint64_t tk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
 
@@ -637,36 +730,26 @@ namespace QuantumOX {
             TTEntry e;
             if (shared_tt_root_get(tk, e)) tt_move = e.best_move;
         }
-        if (tt_move) {
-            auto f = std::find(moves.begin(), moves.end(), *tt_move);
-            if (f != moves.end()) { moves.erase(f); moves.insert(moves.begin(), *tt_move); }
-        }
 
+        // Separate instant-winning moves first
         std::vector<int> winning, others;
         for (int mv : moves) {
-            try { board.make_move(mv); } catch(...) { others.push_back(mv); continue; }
-            std::string prev_player = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
-            bool is_win = board.is_win(prev_player);
-            try { board.unmake_move(mv); } catch(...) {}
+            bool is_win = false;
+            try {
+                board.make_move(mv);
+                std::string prev_player = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
+                is_win = board.is_win(prev_player);
+                board.unmake_move(mv);
+            } catch(...) { /* treat as non-winning */ }
             if (is_win) winning.push_back(mv); else others.push_back(mv);
         }
 
-        std::vector<int> ordered;
-        ordered.insert(ordered.end(), winning.begin(), winning.end());
-        ordered.insert(ordered.end(), others.begin(), others.end());
+        std::vector<int> combined;
+        combined.insert(combined.end(), winning.begin(), winning.end());
+        combined.insert(combined.end(), others.begin(), others.end());
 
-        auto move_score = [&](int mv) -> double {
-            double sc = 0.0;
-            if (tt_move && *tt_move == mv) sc += 10000000.0;
-            auto itkm = killer_moves.find(depth);
-            if (itkm != killer_moves.end()) for (int km : itkm->second) if (km == mv) sc += 1000.0;
-            auto ith = history.find(mv);
-            if (ith != history.end()) sc += static_cast<double>(ith->second);
-            sc += -static_cast<double>(mv) * 0.01;
-            return sc;
-        };
-
-        std::sort(ordered.begin(), ordered.end(), [&](int a, int b){ return move_score(a) > move_score(b); });
+        // order
+        std::vector<int> ordered = order_moves_for_minimax(this, board, combined, tk, depth);
 
         std::vector<std::future<RootEvalResult>> futures;
         futures.reserve(ordered.size());
@@ -677,7 +760,7 @@ namespace QuantumOX {
                 rr.move = mv;
                 rr.nodes = 0;
                 rr.seldepth = 0;
-                rr.score = -10000000;
+                rr.score = -INF;
                 try {
                     Board local_board = board; // copy
                     try { local_board.make_move(mv); } catch(...) { return rr; }
@@ -702,7 +785,7 @@ namespace QuantumOX {
             }));
         }
 
-        int best_score = -10000000;
+        int best_score = -INF;
         std::optional<int> best_move = std::nullopt;
 
         for (auto &fut : futures) {
@@ -724,6 +807,7 @@ namespace QuantumOX {
         return best_score;
     }
 
+    // ---------- minimax with ordering + LMR-like early reductions -----------
     int Searcher::minimax(Board& board, int depth, int alpha, int beta, const std::string& root_player, int root_depth) {
         ++nodes;
         PlyGuard pg(this);
@@ -757,45 +841,58 @@ namespace QuantumOX {
 
         std::optional<int> tt_move = std::nullopt;
         if (shared_tt_root_get(tk, entry)) tt_move = entry.best_move;
-        if (tt_move) {
-            auto f = std::find(moves.begin(), moves.end(), *tt_move);
-            if (f != moves.end()) { moves.erase(f); moves.insert(moves.begin(), *tt_move); }
-        }
 
+        // separate winning moves quickly to prioritize them
         std::vector<int> winning, others;
         for (int mv : moves) {
-            try { board.make_move(mv); } catch(...) { others.push_back(mv); continue; }
-            std::string prev_player = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
-            bool is_win = board.is_win(prev_player);
-            try { board.unmake_move(mv); } catch(...) {}
+            bool is_win = false;
+            try {
+                board.make_move(mv);
+                std::string prev_player = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
+                is_win = board.is_win(prev_player);
+                board.unmake_move(mv);
+            } catch(...) {}
             if (is_win) winning.push_back(mv); else others.push_back(mv);
         }
+        std::vector<int> combined;
+        combined.insert(combined.end(), winning.begin(), winning.end());
+        combined.insert(combined.end(), others.begin(), others.end());
 
-        std::vector<int> ordered;
-        ordered.insert(ordered.end(), winning.begin(), winning.end());
-        ordered.insert(ordered.end(), others.begin(), others.end());
-
-        auto mv_sort_key = [&](int mv)->double {
-            double s = 0.0;
-            if (tt_move && *tt_move == mv) s += 10000000.0;
-            auto itkm = killer_moves.find(depth);
-            if (itkm != killer_moves.end()) for (int km: itkm->second) if (km == mv) s += 1000.0;
-            auto ith = history.find(mv);
-            if (ith != history.end()) s += static_cast<double>(ith->second);
-            s += -static_cast<double>(mv) * 0.01;
-            return s;
-        };
-        std::sort(ordered.begin(), ordered.end(), [&](int a, int b){ return mv_sort_key(a) > mv_sort_key(b); });
+        std::vector<int> ordered = order_moves_for_minimax(this, board, combined, tk, depth);
 
         bool maximizing = (board.get_side_to_move() == root_player);
-        int best_score = maximizing ? -10000000 : 10000000;
+        int best_score = maximizing ? -INF : INF;
         std::optional<int> best_move = std::nullopt;
         int original_alpha = alpha, original_beta = beta;
 
+        int move_idx = 0;
         for (int mv : ordered) {
             if (should_abort()) { abort_flag = true; break; }
+            ++move_idx;
             try { board.make_move(mv); } catch(...) { continue; }
-            int score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+
+            int score;
+            // Use LMR-like reduction (only on the side that is not immediate-winning)
+            int reduction = lmr_reduction(depth, move_idx);
+            int search_depth = std::max(0, depth - 1 - reduction);
+
+            // null-window for non-first moves and non-winning moves, then re-search if needed
+            if (move_idx == 1) {
+                score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+            } else {
+                if (maximizing) {
+                    score = minimax(board, search_depth, alpha, alpha + 1, root_player, root_depth);
+                    if (score > alpha && score < beta) {
+                        score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+                    }
+                } else {
+                    score = minimax(board, search_depth, beta - 1, beta, root_player, root_depth);
+                    if (score < beta && score > alpha) {
+                        score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+                    }
+                }
+            }
+
             try { board.unmake_move(mv); } catch(...) {}
 
             if (maximizing) {
@@ -813,7 +910,7 @@ namespace QuantumOX {
                 TTFlag store_flag = maximizing ? TTFlag::LOWER : TTFlag::UPPER;
                 TTEntry e; e.key = tk; e.depth = depth; e.score = best_score; e.flag = store_flag; e.best_move = best_move;
                 shared_tt_root_store(tk, e);
-                break;
+                return best_score;
             }
         }
 
@@ -830,16 +927,17 @@ namespace QuantumOX {
 
         TTEntry e; e.key = tk; e.depth = depth; e.score = best_score; e.flag = final_flag; e.best_move = best_move;
         shared_tt_root_store(tk, e);
-        // Also attempt to store plain TT for this kp (best effort)
-        try { 
+
+        // Best-effort mirror store to plain TT
+        try {
             TTEntry pe; pe.key = kp; pe.depth = depth; pe.score = best_score; pe.flag = final_flag; pe.best_move = best_move;
             shared_tt_plain_store(kp, pe);
         } catch(...) {}
+
         return best_score;
     }
 
     // ---------- PV builders --------------------------------------------------
-
     std::vector<int> Searcher::build_pv_for_root(Board& board, const std::string& root_player) {
         std::vector<int> pv;
         std::vector<int> played;
@@ -853,7 +951,7 @@ namespace QuantumOX {
                 auto legal = board.legal_moves();
                 if (std::find(legal.begin(), legal.end(), mv) == legal.end()) break;
                 pv.push_back(mv);
-                board.make_move(mv);
+                try { board.make_move(mv); } catch(...) { break; }
                 played.push_back(mv);
                 if (pv.size() > 256) break;
             }
@@ -875,14 +973,13 @@ namespace QuantumOX {
                 if (!shared_tt_plain_get(k, e) || !e.best_move.has_value()) break;
                 int mv = *e.best_move;
                 pv.push_back(mv);
-                cur.make_move(mv);
+                try { cur.make_move(mv); } catch(...) { break; }
             }
         } catch(...) {}
         return pv;
     }
 
     // ---------- Evaluation helpers -------------------------------------------
-
     int Searcher::evaluate_terminal(Board& board) {
         std::string stm = board.get_side_to_move();
         std::string opp = (stm == std::string(1, SYMBOL_X)) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
@@ -935,7 +1032,6 @@ namespace QuantumOX {
     }
 
     // ---------- Convenience free function -----------------------------------
-
     Searcher::SearchResult search_position(Board& board,
                                            std::optional<int> max_depth,
                                            std::optional<int> time_ms,
