@@ -43,7 +43,11 @@ OBJS = $(SRCS:.cpp=.o)
 
 ### Compiler defaults
 CXX ?= g++
-CXXFLAGS ?= -Wall -Wextra -Wshadow -std=c++20
+CXXFLAGS ?= -std=c++20 -Ofast -march=native -mtune=native -funroll-loops -flto=auto \
+    -fomit-frame-pointer -fno-math-errno -funsafe-math-optimizations -ffast-math \
+    -fassociative-math -fno-signed-zeros -fno-trapping-math -fno-stack-protector \
+    -falign-functions=64 -fprefetch-loop-arrays -fstrict-aliasing -DNDEBUG -pipe \
+    -Wall -Wextra -Wshadow
 LDFLAGS ?=
 
 ### Default optimization / debug flags
