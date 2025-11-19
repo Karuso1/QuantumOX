@@ -25,5 +25,5 @@
 ## Documentation
 - [ ] Add developer documentation detailing OXNN’s role in the hybrid evaluation process.
 
-**Version:** 1.1-pre  
+**Version:** 1.2-pre  
 **Maintained by:** Kartik  
