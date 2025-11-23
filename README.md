@@ -15,7 +15,7 @@ QuantumOX evaluates game states with precision, predicts outcomes (win/loss/draw
 
   * `minimaxpv`: principal variation from the minimax perspective
   * `negamaxpv`: principal variation from the negamax perspective
-  * `pv`: final hybrid sequence after both analyses
+  * `pv`: final chosen (by score) sequence after both analyses
   * `time`: total milliseconds elapsed since search start for that depth
 * Correctly identifies draws, wins, and losses
 * Fully UTTTI-compliant (`go depth`, `grid emptygrid`, `setoption`, `stop`, etc.)
