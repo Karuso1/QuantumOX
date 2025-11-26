@@ -59,9 +59,9 @@ namespace QuantumOX {
         // Utilities
         std::string board_state() const;
         std::vector<int> legal_moves() const;
+        Board board;
         
     private:
-        Board board;
         Searcher searcher;
     };
 
