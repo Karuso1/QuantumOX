@@ -52,6 +52,8 @@ namespace QuantumOX {
     
         // ------------------ utilities -----------------------------------------
         void fill_from_list(const std::vector<int>& moves);
+        bool validate_tttn(const std::string& tttn_str) const;
+        void load_tttn(const std::string& tttn_str);
         void reset();
         std::string to_string() const;
         std::string get_side_to_move() const;
