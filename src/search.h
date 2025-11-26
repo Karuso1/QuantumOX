@@ -90,12 +90,6 @@ namespace QuantumOX {
         
         // ----------------- Abort request -----------------------
         void request_abort();
-        
-    private:
-        friend struct PlyGuard;
-        friend std::vector<int> order_moves_for_negamax(Searcher*, Board&, std::vector<int>, uint64_t, int);
-        friend std::vector<int> order_moves_for_minimax(Searcher*, Board&, std::vector<int>, uint64_t, int);
-
 
         // ----------------- Internal helpers -----------------------------
         // Note: ThreadPool is forward-declared above; search.cpp provides the definition.
