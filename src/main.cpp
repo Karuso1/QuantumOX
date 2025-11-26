@@ -16,15 +16,20 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>. 
  */
 
+#include <atomic>
+#include <condition_variable>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 #include <sstream>
 #include <utility>
 #include <map>
+#include <mutex>
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <queue>
 
 #include "constants.h"
 #include "utils.h"
@@ -32,6 +37,13 @@
 #include "engine.h"
 
 using namespace QuantumOX;
+
+std::mutex input_mtx;
+std::queue<std::string> input_queue;
+std::condition_variable input_cv;
+std::atomic<bool> running{true};
+std::atomic<bool> search_running{false};
+std::thread search_thread;
 
 static const char* HELP_TEXT = R"(QuantumOX UTTTI commands and usage:
 
@@ -136,7 +148,7 @@ Description:
 // Valid flags/subcommands per command (lowercase)
 static const std::map<std::string, std::vector<std::string>> VALID_TOKENS = {
     // grid: first token after "grid" is a subcommand; for emptygrid we accept the flag "fill"
-    {"grid", {"emptygrid", "fill"}},
+    {"grid", {"emptygrid", "fill", "tttn"}},
     // go: recognized flags
     {"go", {"depth", "movetime", "movetime_ms", "nodes"}},
     // setoption expects tokens "name" and "value"
@@ -341,6 +353,24 @@ void handle_grid(QuantumOXEngine& engine, const std::vector<std::string>& tokens
                     }
                 }
                 engine.play_moves(moves);
+            } else if (lower_flag == "tttn") {
+                if (tokens.size() < 4) {
+                    std::cout << "grid emptygrid tttn: missing TTTN string\n";
+                    std::cout.flush();
+                    return;
+                }
+                std::string tttn_str = tokens[3];
+                // optional: if TTTN might have spaces, concatenate remaining tokens
+                for (size_t i = 4; i < tokens.size(); ++i)
+                    tttn_str += " " + tokens[i];
+            
+                try {
+                    engine.board.load_tttn(tttn_str);
+                } catch (const std::exception &e) {
+                    std::cout << "Invalid TTTN: " << e.what() << "\n";
+                    std::cout.flush();
+                    return;
+                }
             } else {
                 // unknown flag for emptygrid -- suggest if possible
                 std::vector<std::string> sub_flags = {"fill"};
@@ -408,24 +438,57 @@ void handle_go(QuantumOXEngine& engine, const std::vector<std::string>& tokens) 
     std::cout.flush();
 }
 
+void input_thread_func() {
+    std::string raw;
+    while (running) {
+        if (!std::getline(std::cin, raw)) {
+            running = false;
+            input_cv.notify_all();
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(input_mtx);
+            input_queue.push(raw);
+        }
+        input_cv.notify_one();
+    }
+}
+
 int main() {
     std::cout << "QuantumOX " << ENGINE_VERSION << " by " << ENGINE_AUTHOR << "\n";
     std::cout.flush();
-    
+
     QuantumOXEngine engine;
-    std::string raw;
-    while (std::getline(std::cin, raw)) {
-        std::string line;
+
+    // async input thread
+    std::thread input_thread(input_thread_func);
+
+    while (running) {
+        std::unique_lock<std::mutex> lk(input_mtx);
+
+        // wait for a command
+        input_cv.wait(lk, [] {
+            return !input_queue.empty() || !running;
+        });
+
+        if (!running) break;
+
+        std::string raw = input_queue.front();
+        input_queue.pop();
+        lk.unlock();
+
         // trim
         size_t start = raw.find_first_not_of(" \t\r\n");
         if (start == std::string::npos) continue;
         size_t end = raw.find_last_not_of(" \t\r\n");
-        line = raw.substr(start, end - start + 1);
+        std::string line = raw.substr(start, end - start + 1);
         if (line.empty()) continue;
+
         std::vector<std::string> tokens = tokenize_command(line);
         if (tokens.empty()) continue;
+
         std::string cmd = tokens[0];
-        for (auto & c : cmd) c = static_cast<char>(std::tolower(c));
+        for (auto &c : cmd) c = static_cast<char>(std::tolower(c));
 
         try {
             if (cmd == "uttti") {
@@ -440,15 +503,24 @@ int main() {
             } else if (cmd == "grid") {
                 handle_grid(engine, tokens);
             } else if (cmd == "go") {
-                handle_go(engine, tokens);
+                if (search_running) {
+                    continue;
+                }
+
+                search_running = true;
+                search_thread = std::thread([&engine, tokens]() {
+                    handle_go(engine, tokens);
+                    search_running = false;
+                });
+                search_thread.detach();
             } else if (cmd == "stop") {
                 engine.stop();
             } else if (cmd == "clear") {
-                #if defined(_WIN32) || defined(_WIN64)
-                    system("cls");
-                #else
-                    system("clear");
-                #endif
+            #if defined(_WIN32) || defined(_WIN64)
+                system("cls");
+            #else
+                system("clear");
+            #endif
             } else if (cmd == "help") {
                 if (tokens.size() == 1) {
                     std::cout << HELP_TEXT << "\n";
@@ -463,15 +535,20 @@ int main() {
                 }
                 std::cout.flush();
             } else if (cmd == "quit" || cmd == "exit") {
+                running = false;
                 break;
             } else {
-                std::cout << "Unknown command: " << tokens[0] << ", type 'help' for UTTTI commands\n";
+                std::cout << "Unknown command: " << tokens[0]
+                          << ", type 'help' for UTTTI commands\n";
                 std::cout.flush();
             }
         } catch (...) {
-            // ignore errors and continue loop
             continue;
         }
     }
+
+    running = false;
+    input_cv.notify_all();
+    if (input_thread.joinable()) input_thread.join();
     return 0;
 }
