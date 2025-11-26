@@ -232,16 +232,15 @@ namespace QuantumOX {
     namespace {
         constexpr int INF = 10000000;
         constexpr int ASP_WINDOW = 50;
-        constexpr int LMR_DEPTH_THRESHOLD = 3; // only reduce when depth > this
+        constexpr int LMR_DEPTH_THRESHOLD = 2; // only reduce when depth > this
         // base reduction formula: reduce = 1 + log(depth) approx
         inline int lmr_reduction(int depth, int move_index) {
             // more reduction for later moves and deeper depth
             if (depth <= LMR_DEPTH_THRESHOLD) return 0;
             double d = std::log2(static_cast<double>(depth));
-            int r = 1 + static_cast<int>(d * (1.0 + move_index / 6.0));
+            int r = 1 + static_cast<int>(d * (0.8 + move_index / 8.0));
             // clamp
-            if (r >= depth) r = depth - 1;
-            return r;
+            return std::min(r, depth - 1);
         }
     }
 
@@ -377,6 +376,11 @@ namespace QuantumOX {
         return out;
     }
 
+    auto info_token = [](const std::string &token) {
+        std::cout << token << " " << std::flush; // flush makes it appear immediately
+    };
+
+
     // ---------------- core search loop (iterative deepening) ----------------
     Searcher::SearchResult Searcher::search(Board& board,
                                            std::optional<int> max_depth_opt,
@@ -406,6 +410,12 @@ namespace QuantumOX {
 
         int prev_neg_score = 0;
         int prev_min_score = 0;
+
+        uint64_t hash_size_entries = 0;
+        try {
+            hash_size_entries = std::stoull(get_option("Hash"));
+            if (hash_size_entries == 0) hash_size_entries = 1;
+        } catch (...) { hash_size_entries = 16; } // fallback
 
         for (int depth = 1; depth <= max_depth; ++depth) {
             if (should_abort()) break;
@@ -507,19 +517,31 @@ namespace QuantumOX {
             ir.pv = best_pv;
             infos.push_back(ir);
 
-            std::ostringstream oss;
-            oss << "info depth " << depth
-                << " seldepth " << max_seldepth
-                << " score " << best_score
-                << " nodes " << nodes
-                << " nps " << ir.nps
-                << " minimaxpv";
-            for (int mv : min_pv) oss << " " << mv;
-            oss << " negamaxpv";
-            for (int mv : neg_pv) oss << " " << mv;
-            oss << " time " << elapsed_ms() << " pv";
-            for (int mv : best_pv) oss << " " << mv;
-            std::cout << oss.str() << std::endl;
+            // compute hashfull per-mille
+            uint64_t current_tt_entries = shared_tt_plain.size(); // plain TT
+            uint64_t hashfull_permille = static_cast<uint64_t>(
+                std::min(1000.0, (double(current_tt_entries) * 1000.0 / double(hash_size_entries)))
+            );
+
+            info_token("info");
+            info_token("depth"); info_token(std::to_string(depth));
+            info_token("seldepth"); info_token(std::to_string(max_seldepth));
+            info_token("score"); info_token(std::to_string(best_score));
+            info_token("nodes"); info_token(std::to_string(nodes));
+            info_token("nps"); info_token(std::to_string(ir.nps));
+            info_token("hashfull"); info_token(std::to_string(hashfull_permille));
+
+            // PV moves
+            info_token("minimaxpv");
+            for (int mv : min_pv) info_token(std::to_string(mv));
+            info_token("negamaxpv");
+            for (int mv : neg_pv) info_token(std::to_string(mv));
+            info_token("time"); info_token(std::to_string(elapsed_ms()));
+            info_token("pv");
+            for (int mv : best_pv) info_token(std::to_string(mv));
+
+            // finally end line
+            std::cout << std::endl;
 
             if (time_exceeded() || nodes_exceeded()) break;
         }
@@ -621,6 +643,41 @@ namespace QuantumOX {
         return best_score;
     }
 
+    // ------------------ Seldepth Extensions ------------------
+    inline int immediate_win(Board& board, int mv, const std::string& player) {
+        try {
+            board.make_move(mv);
+            bool win = board.is_win(player);
+            board.unmake_move(mv);
+            return win ? 1 : 0;
+        } catch(...) { return 0; }
+    }
+
+    inline int pv_move(const std::optional<int>& tt_move, int mv) {
+        return (tt_move && *tt_move == mv) ? 1 : 0;
+    }
+
+    inline int near_endgame(Board& board) {
+        int empty = board.legal_moves().size();
+        return (empty <= 2) ? 2 : 0;
+    }
+
+    inline int quiescence(Board& board, const std::string& player) {
+        // fully resolve "critical" positions in bigger boards
+        try {
+            auto moves = board.legal_moves();
+            for (int mv : moves) {
+                board.make_move(mv);
+                if (board.is_win(player)) {
+                    board.unmake_move(mv);
+                    return 1;
+                }
+                board.unmake_move(mv);
+            }
+        } catch(...) {}
+        return 0;
+    }
+
     // ---------- negamax with PVS + LMR -------------------------------------
     int Searcher::negamax(Board& board, int depth, int alpha, int beta, int root_depth) {
         ++nodes;
@@ -669,19 +726,27 @@ namespace QuantumOX {
             ++move_index;
             try { board.make_move(mv); } catch(...) { continue; }
 
+            int ext = 0;
+            ext += immediate_win(board, mv, board.get_side_to_move());
+            ext += pv_move(tt_move_local, mv);
+            ext += near_endgame(board);
+            ext += quiescence(board, board.get_side_to_move());
+
+            int new_depth = depth - 1 + ext;
+
             int score;
             if (first) {
                 // full window for first move
-                score = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+                score = -negamax(board, new_depth - 1, -beta, -alpha, root_depth);
             } else {
                 // LMR + PVS: do a reduced/zero window search then re-search if it raises alpha
                 int reduction = lmr_reduction(depth, move_index);
-                int reduced_depth = std::max(0, depth - 1 - reduction);
+                int reduced_depth = std::max(0, new_depth - 1 - reduction);
                 // try reduced (or null-window) search
                 score = -negamax(board, reduced_depth, -alpha - 1, -alpha, root_depth);
                 if (score > alpha && score < beta) {
                     // re-search full depth
-                    score = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+                    score = -negamax(board, new_depth - 1, -beta, -alpha, root_depth);
                 }
             }
 
@@ -871,6 +936,15 @@ namespace QuantumOX {
             ++move_idx;
             try { board.make_move(mv); } catch(...) { continue; }
 
+            std::optional<int> tt_move_local = std::nullopt;
+            int ext = 0;
+            ext += immediate_win(board, mv, board.get_side_to_move());
+            ext += pv_move(tt_move_local, mv);
+            ext += near_endgame(board);
+            ext += quiescence(board, board.get_side_to_move());
+
+            int new_depth = depth - 1 + ext;
+
             int score;
             // Use LMR-like reduction (only on the side that is not immediate-winning)
             int reduction = lmr_reduction(depth, move_idx);
@@ -878,17 +952,17 @@ namespace QuantumOX {
 
             // null-window for non-first moves and non-winning moves, then re-search if needed
             if (move_idx == 1) {
-                score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+                score = minimax(board, new_depth - 1, alpha, beta, root_player, root_depth);
             } else {
                 if (maximizing) {
                     score = minimax(board, search_depth, alpha, alpha + 1, root_player, root_depth);
                     if (score > alpha && score < beta) {
-                        score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+                        score = minimax(board, new_depth - 1, alpha, beta, root_player, root_depth);
                     }
                 } else {
                     score = minimax(board, search_depth, beta - 1, beta, root_player, root_depth);
                     if (score < beta && score > alpha) {
-                        score = minimax(board, depth - 1, alpha, beta, root_player, root_depth);
+                        score = minimax(board, new_depth - 1, alpha, beta, root_player, root_depth);
                     }
                 }
             }
