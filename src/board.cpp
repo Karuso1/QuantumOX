@@ -23,6 +23,7 @@
 #include <random>
 #include <algorithm>
 #include <numeric>
+#include <cctype>
 
 namespace QuantumOX {
 
@@ -33,31 +34,92 @@ namespace QuantumOX {
         oss << sym;
         return oss.str();
     }
-    
+
     static int product(const std::vector<int>& nums) {
         if (nums.empty()) return 0;
         return std::accumulate(nums.begin(), nums.end(), 1, std::multiplies<int>());
     }
-    
+
+    // parse a single row token string (like "1X1" or "X2" or "3") to actual symbols
+    // supports digits (repeat empties), '.' as one empty, X/x, O/o.
+    static void parse_row_to_symbols(const std::string& row,
+                                     int expected_cols,
+                                     std::vector<std::string>& out_symbols) {
+        out_symbols.clear();
+        out_symbols.reserve(static_cast<size_t>(expected_cols));
+
+        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
+        std::string s_x = symbol_to_string_auto(SYMBOL_X);
+        std::string s_o = symbol_to_string_auto(SYMBOL_O);
+
+        size_t i = 0;
+        while (i < row.size()) {
+            char ch = row[i];
+            if (std::isdigit(static_cast<unsigned char>(ch))) {
+                // read full number
+                long long val = 0;
+                while (i < row.size() && std::isdigit(static_cast<unsigned char>(row[i]))) {
+                    val = val * 10 + (row[i] - '0');
+                    ++i;
+                    // avoid absurd huge counts:
+                    if (val > 1000000) throw std::runtime_error("TTTN numeric run too large");
+                }
+                if (val < 0) throw std::runtime_error("negative repeat in TTTN");
+                for (long long k = 0; k < val; ++k) out_symbols.push_back(s_empty);
+            } else {
+                // symbol
+                if (ch == '.' || ch == '_') {
+                    out_symbols.push_back(s_empty);
+                } else if (ch == 'X' || ch == 'x') {
+                    out_symbols.push_back(s_x);
+                } else if (ch == 'O' || ch == 'o') {
+                    out_symbols.push_back(s_o);
+                } else {
+                    // allow other whitespace/safe separators (shouldn't appear)
+                    if (std::isspace(static_cast<unsigned char>(ch))) {
+                        ++i;
+                        continue;
+                    }
+                    // unknown char: error
+                    std::ostringstream oss;
+                    oss << "Unknown character '" << ch << "' in TTTN row";
+                    throw std::runtime_error(oss.str());
+                }
+                ++i;
+            }
+            if (static_cast<int>(out_symbols.size()) > expected_cols)
+                throw std::runtime_error("Row expands to more columns than expected in TTTN");
+        }
+
+        if (static_cast<int>(out_symbols.size()) != expected_cols) {
+            std::ostringstream oss;
+            oss << "Row length mismatch in TTTN: expected " << expected_cols
+                << " but got " << out_symbols.size();
+            throw std::runtime_error(oss.str());
+        }
+    }
+
     // ------------------ constructors / initialization ---------------------------
     Board::Board(const std::string& grid_spec_in)
         : grid_spec(grid_spec_in),
           side_to_move(symbol_to_string_auto(SYMBOL_X)) // default start
     {
         // dims
-        dims = parse_grid_spec(grid_spec); // expects vector<int>
+        dims = parse_grid_spec(grid_spec); // expects vector<int> like {layers, rows, cols} or {rows, cols}
+        if (dims.empty()) throw std::runtime_error("Invalid grid_spec, no dims parsed");
+
         // cells
         int total = product(dims);
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        cells.assign(total, s_empty);
-    
+        cells.assign(static_cast<size_t>(total), s_empty);
+
         // zobrist
         init_zobrist(0);
-    
+
         // precompute win lines
         win_lines = generate_win_lines();
     }
-    
+
     // ------------------ move / state management --------------------------------
     std::vector<int> Board::legal_moves() const {
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
@@ -68,24 +130,24 @@ namespace QuantumOX {
         }
         return moves;
     }
-    
+
     void Board::make_move(int move) {
         if (move < 1) throw std::runtime_error("Move index must be >= 1");
         size_t idx = static_cast<size_t>(move - 1);
         if (idx >= cells.size()) throw std::runtime_error("Move " + std::to_string(move) + " out of range for board");
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
         if (cells[idx] != s_empty) throw std::runtime_error("Cell " + std::to_string(move) + " is not empty");
-    
+
         // place
         cells[idx] = side_to_move;
         move_stack.push_back(move);
-    
+
         // flip side
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
         std::string s_o = symbol_to_string_auto(SYMBOL_O);
         side_to_move = (side_to_move == s_x) ? s_o : s_x;
     }
-    
+
     void Board::unmake_move(int move) {
         if (move_stack.empty()) throw std::runtime_error("Unmake called but move stack is empty");
         int last = move_stack.back();
@@ -97,13 +159,13 @@ namespace QuantumOX {
         if (idx >= cells.size()) throw std::runtime_error("Move " + std::to_string(move) + " out of range for board");
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
         cells[idx] = s_empty;
-    
+
         // flip side back
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
         std::string s_o = symbol_to_string_auto(SYMBOL_O);
         side_to_move = (side_to_move == s_x) ? s_o : s_x;
     }
-    
+
     // ------------------ game status --------------------------------------------
     bool Board::is_win(const std::string& player) const {
         for (const auto & line : win_lines) {
@@ -119,20 +181,20 @@ namespace QuantumOX {
         }
         return false;
     }
-    
+
     bool Board::is_draw() const {
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
         if (is_win(symbol_to_string_auto(SYMBOL_X)) || is_win(symbol_to_string_auto(SYMBOL_O)))
             return false;
         return std::all_of(cells.begin(), cells.end(), [&](const std::string &c){ return c != s_empty; });
     }
-    
+
     // ------------------ evaluation ---------------------------------------------
     int Board::evaluate(const std::string& player) const {
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
         std::string s_o = symbol_to_string_auto(SYMBOL_O);
         std::string opp = (player == s_x) ? s_o : s_x;
-    
+
         int score = 0;
         for (const auto & line : win_lines) {
             std::vector<std::string> marks;
@@ -155,7 +217,7 @@ namespace QuantumOX {
         }
         return score;
     }
-    
+
     // ------------------ zobrist hashing ----------------------------------------
     void Board::init_zobrist(uint64_t seed) {
         std::mt19937_64 rng(static_cast<uint64_t>(seed));
@@ -167,7 +229,7 @@ namespace QuantumOX {
             (*zobrist_table)[static_cast<size_t>(i)][1] = dist(rng);
         }
     }
-    
+
     uint64_t Board::zobrist_key() const {
         if (!zobrist_table.has_value()) {
             // non-const init fallback (shouldn't normally happen)
@@ -188,19 +250,19 @@ namespace QuantumOX {
         }
         return h;
     }
-    
+
     // ------------------ win-line generation ------------------------------------
     std::vector<std::vector<int>> Board::generate_win_lines() const {
         std::vector<std::vector<int>> out;
         int N = static_cast<int>(dims.size());
         if (N == 0) return out;
-    
+
         // determine L (win length)
         int L;
         bool all_eq = std::all_of(dims.begin(), dims.end(), [&](int d){ return d == dims[0]; });
         if (all_eq) L = dims[0];
         else L = *std::min_element(dims.begin(), dims.end());
-    
+
         // build directions: all vectors in {-1,0,1}^N except zero vector
         // we'll represent directions as vector<int> of length N with values -1,0,1
         std::vector<std::vector<int>> directions;
@@ -229,9 +291,8 @@ namespace QuantumOX {
             }
             if (ok) directions.push_back(d);
         }
-    
+
         // generate all start coordinates (cartesian product of ranges)
-        // We'll implement an odometer-style loop over dims
         std::vector<int> start(N, 0);
         bool finished = false;
         while (!finished) {
@@ -266,7 +327,7 @@ namespace QuantumOX {
                 }
                 if (fits) out.push_back(line_indices);
             }
-        
+
             // increment odometer
             int pos = N - 1;
             while (pos >= 0) {
@@ -277,10 +338,10 @@ namespace QuantumOX {
             }
             if (pos < 0) finished = true;
         }
-    
+
         return out;
     }
-    
+
     // ------------------ utilities ----------------------------------------------
     int Board::coords_to_index(const std::vector<int>& coords) const {
         if (coords.size() != dims.size()) throw std::runtime_error("coords length must match dims length");
@@ -291,18 +352,18 @@ namespace QuantumOX {
         }
         return idx + 1;
     }
-    
+
     void Board::fill_from_list(const std::vector<int>& moves) {
         for (int mv : moves) make_move(mv);
     }
-    
+
     void Board::reset() {
         std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
         cells.assign(cells.size(), s_empty);
         move_stack.clear();
         side_to_move = symbol_to_string_auto(SYMBOL_X);
     }
-    
+
     std::string Board::to_string() const {
         std::ostringstream oss;
         if (dims.size() == 2) {
@@ -326,6 +387,187 @@ namespace QuantumOX {
 
     std::string Board::get_side_to_move() const {
         return side_to_move;
+    }
+
+    // ------------------ TTTN validation & loader --------------------------------
+    // validate_tttn: basic syntax check + dims match
+    bool Board::validate_tttn(const std::string& tttn_str) const {
+        // Acceptable formats: (based on dims.size())
+        // 1D: a token that expands to dims[0] cells (e.g. "3" or "X2X")
+        // 2D: rows separated by '/', number of rows == dims[0], each expands to dims[1]
+        // 3D: layers separated by '|', each layer has rows separated by '/', #layers == dims[0], #rows == dims[1], each row expands to dims[2]
+        if (dims.empty()) return false;
+
+        try {
+            if (dims.size() == 1) {
+                // single token
+                std::vector<std::string> syms;
+                parse_row_to_symbols(tttn_str, dims[0], syms);
+                (void)syms;
+                return true;
+            } else if (dims.size() == 2) {
+                // rows separated by '/'
+                std::vector<std::string> rows;
+                std::string cur;
+                for (char ch : tttn_str) {
+                    if (ch == '/') {
+                        rows.push_back(cur);
+                        cur.clear();
+                    } else cur.push_back(ch);
+                }
+                rows.push_back(cur);
+                if (static_cast<int>(rows.size()) != dims[0]) return false;
+                for (const auto &r : rows) {
+                    std::vector<std::string> syms;
+                    parse_row_to_symbols(r, dims[1], syms);
+                }
+                return true;
+            } else if (dims.size() == 3) {
+                // layers separated by '|'
+                std::vector<std::string> layers;
+                std::string cur;
+                for (char ch : tttn_str) {
+                    if (ch == '|') {
+                        layers.push_back(cur);
+                        cur.clear();
+                    } else cur.push_back(ch);
+                }
+                layers.push_back(cur);
+                if (static_cast<int>(layers.size()) != dims[0]) return false;
+                for (const auto &layer : layers) {
+                    // split rows
+                    std::vector<std::string> rows;
+                    std::string rcur;
+                    for (char ch : layer) {
+                        if (ch == '/') {
+                            rows.push_back(rcur);
+                            rcur.clear();
+                        } else rcur.push_back(ch);
+                    }
+                    rows.push_back(rcur);
+                    if (static_cast<int>(rows.size()) != dims[1]) return false;
+                    for (const auto &r : rows) {
+                        std::vector<std::string> syms;
+                        parse_row_to_symbols(r, dims[2], syms);
+                    }
+                }
+                return true;
+            } else {
+                // not implemented for >3 dims in TTTN textual format
+                return false;
+            }
+        } catch (...) {
+            return false;
+        }
+    }
+
+    // load_tttn: parse and write into cells; infers side-to-move from counts (X starts)
+    void Board::load_tttn(const std::string& tttn_str) {
+        if (!validate_tttn(tttn_str)) {
+            throw std::runtime_error("TTTN validation failed or does not match current grid dimensions");
+        }
+
+        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
+        std::string s_x = symbol_to_string_auto(SYMBOL_X);
+        std::string s_o = symbol_to_string_auto(SYMBOL_O);
+
+        // reset board
+        cells.assign(cells.size(), s_empty);
+        move_stack.clear();
+
+        int count_x = 0;
+        int count_o = 0;
+
+        if (dims.size() == 1) {
+            std::vector<std::string> syms;
+            parse_row_to_symbols(tttn_str, dims[0], syms);
+            for (int i = 0; i < dims[0]; ++i) {
+                cells[static_cast<size_t>(i)] = syms[static_cast<size_t>(i)];
+                if (syms[static_cast<size_t>(i)] == s_x) ++count_x;
+                else if (syms[static_cast<size_t>(i)] == s_o) ++count_o;
+            }
+        } else if (dims.size() == 2) {
+            // split rows
+            std::vector<std::string> rows;
+            std::string cur;
+            for (char ch : tttn_str) {
+                if (ch == '/') {
+                    rows.push_back(cur);
+                    cur.clear();
+                } else cur.push_back(ch);
+            }
+            rows.push_back(cur);
+            int rowsN = dims[0];
+            int colsN = dims[1];
+            for (int r = 0; r < rowsN; ++r) {
+                std::vector<std::string> syms;
+                parse_row_to_symbols(rows[static_cast<size_t>(r)], colsN, syms);
+                for (int c = 0; c < colsN; ++c) {
+                    int idx = (r * colsN + c);
+                    cells[static_cast<size_t>(idx)] = syms[static_cast<size_t>(c)];
+                    if (syms[static_cast<size_t>(c)] == s_x) ++count_x;
+                    else if (syms[static_cast<size_t>(c)] == s_o) ++count_o;
+                }
+            }
+        } else if (dims.size() == 3) {
+            // split layers by '|'
+            std::vector<std::string> layers;
+            std::string curL;
+            for (char ch : tttn_str) {
+                if (ch == '|') {
+                    layers.push_back(curL);
+                    curL.clear();
+                } else curL.push_back(ch);
+            }
+            layers.push_back(curL);
+            int L = dims[0];
+            int R = dims[1];
+            int C = dims[2];
+
+            for (int l = 0; l < L; ++l) {
+                const std::string &layer = layers[static_cast<size_t>(l)];
+                // split rows by '/'
+                std::vector<std::string> rows;
+                std::string curR;
+                for (char ch : layer) {
+                    if (ch == '/') {
+                        rows.push_back(curR);
+                        curR.clear();
+                    } else curR.push_back(ch);
+                }
+                rows.push_back(curR);
+                for (int r = 0; r < R; ++r) {
+                    std::vector<std::string> syms;
+                    parse_row_to_symbols(rows[static_cast<size_t>(r)], C, syms);
+                    for (int c = 0; c < C; ++c) {
+                        // coords: [l, r, c]
+                        std::vector<int> coords = { l, r, c };
+                        int one_based_idx = coords_to_index(coords);
+                        int zero_idx = one_based_idx - 1;
+                        cells[static_cast<size_t>(zero_idx)] = syms[static_cast<size_t>(c)];
+                        if (syms[static_cast<size_t>(c)] == s_x) ++count_x;
+                        else if (syms[static_cast<size_t>(c)] == s_o) ++count_o;
+                    }
+                }
+            }
+        } else {
+            throw std::runtime_error("TTTN loader not implemented for dims > 3");
+        }
+
+        // infer side to move: X starts first
+        if (count_x == count_o) {
+            side_to_move = s_x;
+        } else if (count_x == count_o + 1) {
+            side_to_move = s_o;
+        } else {
+            std::ostringstream oss;
+            oss << "Invalid piece counts in TTTN: X=" << count_x << " O=" << count_o;
+            throw std::runtime_error(oss.str());
+        }
+
+        // regenerate derived data
+        win_lines = generate_win_lines();
+        init_zobrist(0); // re-init (deterministic seed 0); change seed behavior if desired
     }
 
 } // namespace QuantumOX
