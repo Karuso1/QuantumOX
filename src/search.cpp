@@ -220,6 +220,17 @@ namespace QuantumOX {
         return static_cast<uint64_t>(std::hash<std::string>{}(s));
     }
 
+    // compute split depth: given an integer depth d, compute d/2 and apply rule:
+    // if fractional part < 0.5 -> floor, if >= 0.5 -> ceil.
+    static int split_depth_for(int depth) {
+        double half = static_cast<double>(depth) / 2.0;
+        double fl = std::floor(half);
+        double frac = half - fl;
+        int base = static_cast<int>(fl);
+        if (frac >= 0.5) return base + 1;
+        return base;
+    }
+
     // RAII guard for ply counting (ensures pop on exit)
     struct PlyGuard {
         Searcher* s;
@@ -423,64 +434,138 @@ namespace QuantumOX {
             max_seldepth = 0;
             current_seldepth = 0;
 
-            int alpha, beta;
+            // compute split depth according to user's rule
+            int per_algo_depth = split_depth_for(depth);
+            // ensure non-negative
+            if (per_algo_depth < 0) per_algo_depth = 0;
+
+            // Negamax aspiration window based on prev_neg_score
+            int alpha_neg, beta_neg;
             if (depth > 1) {
-                alpha = prev_neg_score - ASP_WINDOW;
-                beta  = prev_neg_score + ASP_WINDOW;
+                alpha_neg = prev_neg_score - ASP_WINDOW;
+                beta_neg  = prev_neg_score + ASP_WINDOW;
             } else {
-                alpha = -INF; beta = INF;
+                alpha_neg = -INF; beta_neg = INF;
             }
 
-            int neg_score = negamax_root(board, depth, alpha, beta, depth, pool);
-
-            // aspiration fail -> full-window re-search
-            if (depth > 1 && (neg_score <= alpha || neg_score >= beta)) {
-                alpha = -INF; beta = INF;
-                neg_score = negamax_root(board, depth, alpha, beta, depth, pool);
+            // Minimax aspiration window based on prev_min_score (we prepare both windows so we can run in parallel)
+            int alpha_min, beta_min;
+            if (depth > 1) {
+                alpha_min = prev_min_score - ASP_WINDOW;
+                beta_min  = prev_min_score + ASP_WINDOW;
+            } else {
+                alpha_min = -INF; beta_min = INF;
             }
+
+            int neg_score = 0;
+            int min_score = 0;
+            std::vector<int> neg_pv, min_pv;
+            std::optional<int> neg_move = std::nullopt, min_move = std::nullopt;
+
+            // If exactly 2 threads are configured, run minimax & negamax concurrently,
+            // each using a tiny local pool of 1 thread to avoid excessive nested parallelism.
+            if (threads == 2) {
+                auto local_pool_neg = std::make_shared<ThreadPool>(1);
+                auto local_pool_min = std::make_shared<ThreadPool>(1);
+
+                // Launch negamax on one OS thread (copy board to avoid races)
+                auto neg_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg]() mutable -> int {
+                    return this->negamax_root(const_cast<Board&>(b), per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg);
+                });
+
+                // Launch minimax on another OS thread (copy board)
+                auto min_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_min, beta_min, depth]() mutable -> int {
+                    // Note: minimax_root needs a pool too; create one here
+                    auto pool_for_min = std::make_shared<ThreadPool>(1);
+                    return this->minimax_root(const_cast<Board&>(b), per_algo_depth, alpha_min, beta_min, depth, pool_for_min);
+                });
+
+                // collect results (and handle aspiration fail re-searchs sequentially if needed)
+                try {
+                    neg_score = neg_fut.get();
+                } catch(...) {
+                    neg_score = -INF;
+                }
+
+                // aspiration fail -> re-search negamax full window
+                if (per_algo_depth > 0 && (depth > 1) && (neg_score <= alpha_neg || neg_score >= beta_neg)) {
+                    // do full window re-search on calling thread (with local pool)
+                    auto pool_re = std::make_shared<ThreadPool>(1);
+                    try {
+                        neg_score = this->negamax_root(board, per_algo_depth, -INF, INF, depth, pool_re);
+                    } catch(...) {}
+                }
+
+                try {
+                    min_score = min_fut.get();
+                } catch(...) {
+                    min_score = -INF;
+                }
+
+                // aspiration fail -> re-search minimax full window
+                if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
+                    auto pool_re2 = std::make_shared<ThreadPool>(1);
+                    try {
+                        min_score = this->minimax_root(board, per_algo_depth, -INF, INF, depth, pool_re2);
+                    } catch(...) {}
+                }
+
+                // After both roots run, extract PVs/moves from TT like before
+                {
+                    TTEntry e;
+                    if (shared_tt_plain_get(key_plain, e)) neg_move = e.best_move;
+                }
+                try { neg_pv = build_pv(board); } catch(...) { if (neg_move) neg_pv = {*neg_move}; }
+
+                {
+                    uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
+                    TTEntry e;
+                    if (shared_tt_root_get(rootk, e)) min_move = e.best_move;
+                }
+                try { min_pv = build_pv_for_root(board, root_player); }
+                catch(...) {
+                    try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
+                }
+
+            } else {
+                // default behavior (sequential) but still split depth for each algorithm as requested:
+                // run negamax (with per_algo_depth)
+                neg_score = negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+
+                // aspiration fail -> full-window re-search
+                if (per_algo_depth > 0 && (depth > 1) && (neg_score <= alpha_neg || neg_score >= beta_neg)) {
+                    alpha_neg = -INF; beta_neg = INF;
+                    neg_score = negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+                }
+                {
+                    TTEntry e;
+                    if (shared_tt_plain_get(key_plain, e)) neg_move = e.best_move;
+                }
+                try { neg_pv = build_pv(board); } catch(...) { if (neg_move) neg_pv = {*neg_move}; }
+
+                if (should_abort()) break;
+
+                // Minimax pass (sequential), also with per_algo_depth
+                min_score = minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
+                if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
+                    alpha_min = -INF; beta_min = INF;
+                    min_score = minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
+                }
+                {
+                    uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
+                    TTEntry e;
+                    if (shared_tt_root_get(rootk, e)) min_move = e.best_move;
+                }
+                try { min_pv = build_pv_for_root(board, root_player); }
+                catch(...) {
+                    try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
+                }
+            }
+
             prev_neg_score = neg_score;
-
-            if (should_abort()) break;
-
-            // pickup PV/move from TT plain
-            std::optional<int> neg_move = std::nullopt;
-            std::vector<int> neg_pv;
-            {
-                TTEntry e;
-                if (shared_tt_plain_get(key_plain, e)) neg_move = e.best_move;
-            }
-            try { neg_pv = build_pv(board); } catch(...) { if (neg_move) neg_pv = {*neg_move}; }
-
-            if (should_abort()) break;
-
-            // MINIMAX pass
-            if (depth > 1) {
-                alpha = prev_min_score - ASP_WINDOW;
-                beta  = prev_min_score + ASP_WINDOW;
-            } else {
-                alpha = -INF; beta = INF;
-            }
-
-            int min_score = minimax_root(board, depth, alpha, beta, depth, pool);
-            if (depth > 1 && (min_score <= alpha || min_score >= beta)) {
-                alpha = -INF; beta = INF;
-                min_score = minimax_root(board, depth, alpha, beta, depth, pool);
-            }
             prev_min_score = min_score;
 
             if (should_abort()) break;
-
-            std::optional<int> min_move = std::nullopt;
-            std::vector<int> min_pv;
-            {
-                uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
-                TTEntry e;
-                if (shared_tt_root_get(rootk, e)) min_move = e.best_move;
-            }
-            try { min_pv = build_pv_for_root(board, root_player); }
-            catch(...) {
-                try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
-            }
 
             // decide
             std::string selector = "negamax";
@@ -539,6 +624,9 @@ namespace QuantumOX {
             info_token("time"); info_token(std::to_string(elapsed_ms()));
             info_token("pv");
             for (int mv : best_pv) info_token(std::to_string(mv));
+
+            // useful for debug
+            info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
 
             // finally end line
             std::cout << std::endl;
