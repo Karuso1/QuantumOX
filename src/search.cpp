@@ -393,6 +393,9 @@ namespace QuantumOX {
 
 
     // ---------------- core search loop (iterative deepening) ----------------
+    // We'll capture seldepth for negamax and minimax separately, then combine them
+    // (sum) and print that as seldepth in info lines. We don't change search logic,
+    // only track and aggregate seldepth values.
     Searcher::SearchResult Searcher::search(Board& board,
                                            std::optional<int> max_depth_opt,
                                            std::optional<int> time_ms_opt,
@@ -431,6 +434,12 @@ namespace QuantumOX {
         for (int depth = 1; depth <= max_depth; ++depth) {
             if (should_abort()) break;
 
+            // reset per-iteration seldepth trackers
+            int neg_seldepth = 0;
+            int min_seldepth = 0;
+            int combined_seldepth = 0;
+
+            // keep global max_seldepth for internal bookkeeping
             max_seldepth = 0;
             current_seldepth = 0;
 
@@ -462,53 +471,95 @@ namespace QuantumOX {
             std::vector<int> neg_pv, min_pv;
             std::optional<int> neg_move = std::nullopt, min_move = std::nullopt;
 
+            // Helper struct for returning algorithm results from async/sequential runners
+            struct AlgoResult { int score; int seldepth; int nodes; };
+
             // If exactly 2 threads are configured, run minimax & negamax concurrently,
             // each using a tiny local pool of 1 thread to avoid excessive nested parallelism.
             if (threads == 2) {
                 auto local_pool_neg = std::make_shared<ThreadPool>(1);
                 auto local_pool_min = std::make_shared<ThreadPool>(1);
 
-                // Launch negamax on one OS thread (copy board to avoid races)
-                auto neg_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg]() mutable -> int {
-                    return this->negamax_root(const_cast<Board&>(b), per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg);
+                // Launch negamax on separate Searcher runner (so we can capture its max_seldepth)
+                auto neg_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg]() mutable -> AlgoResult {
+                    AlgoResult ar{ -INF, 0, 0 };
+                    try {
+                        Searcher runner;
+                        runner.start_time = this->start_time;
+                        runner.time_limit = this->time_limit;
+                        runner.node_limit = this->node_limit;
+                        int sc = runner.negamax_root(const_cast<Board&>(b), per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg);
+                        ar.score = sc;
+                        ar.seldepth = runner.max_seldepth;
+                        ar.nodes = runner.nodes;
+                    } catch(...) {}
+                    return ar;
                 });
 
-                // Launch minimax on another OS thread (copy board)
-                auto min_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_min, beta_min, depth]() mutable -> int {
-                    // Note: minimax_root needs a pool too; create one here
-                    auto pool_for_min = std::make_shared<ThreadPool>(1);
-                    return this->minimax_root(const_cast<Board&>(b), per_algo_depth, alpha_min, beta_min, depth, pool_for_min);
+                // Launch minimax on separate Searcher runner
+                auto min_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_min, beta_min, depth]() mutable -> AlgoResult {
+                    AlgoResult ar{ -INF, 0, 0 };
+                    try {
+                        auto pool_for_min = std::make_shared<ThreadPool>(1);
+                        Searcher runner;
+                        runner.start_time = this->start_time;
+                        runner.time_limit = this->time_limit;
+                        runner.node_limit = this->node_limit;
+                        int sc = runner.minimax_root(const_cast<Board&>(b), per_algo_depth, alpha_min, beta_min, depth, pool_for_min);
+                        ar.score = sc;
+                        ar.seldepth = runner.max_seldepth;
+                        ar.nodes = runner.nodes;
+                    } catch(...) {}
+                    return ar;
                 });
 
                 // collect results (and handle aspiration fail re-searchs sequentially if needed)
-                try {
-                    neg_score = neg_fut.get();
-                } catch(...) {
-                    neg_score = -INF;
-                }
-
-                // aspiration fail -> re-search negamax full window
-                if (per_algo_depth > 0 && (depth > 1) && (neg_score <= alpha_neg || neg_score >= beta_neg)) {
-                    // do full window re-search on calling thread (with local pool)
-                    auto pool_re = std::make_shared<ThreadPool>(1);
+                AlgoResult neg_res{ -INF, 0, 0 }, min_res{ -INF, 0, 0 };
+                try { neg_res = neg_fut.get(); } catch(...) { neg_res.score = -INF; }
+                // aspiration fail -> re-search negamax full window if needed
+                if (per_algo_depth > 0 && (depth > 1) && (neg_res.score <= alpha_neg || neg_res.score >= beta_neg)) {
                     try {
-                        neg_score = this->negamax_root(board, per_algo_depth, -INF, INF, depth, pool_re);
+                        Searcher runner;
+                        runner.start_time = this->start_time;
+                        runner.time_limit = this->time_limit;
+                        runner.node_limit = this->node_limit;
+                        auto pool_re = std::make_shared<ThreadPool>(1);
+                        int sc = runner.negamax_root(board, per_algo_depth, -INF, INF, depth, pool_re);
+                        // update results: sum nodes into our main node counter below
+                        neg_res.score = sc;
+                        neg_res.seldepth = std::max(neg_res.seldepth, runner.max_seldepth);
+                        neg_res.nodes += runner.nodes;
                     } catch(...) {}
                 }
 
-                try {
-                    min_score = min_fut.get();
-                } catch(...) {
-                    min_score = -INF;
-                }
-
-                // aspiration fail -> re-search minimax full window
-                if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
-                    auto pool_re2 = std::make_shared<ThreadPool>(1);
+                try { min_res = min_fut.get(); } catch(...) { min_res.score = -INF; }
+                // aspiration fail -> re-search minimax full window if needed
+                if (per_algo_depth > 0 && (depth > 1) && (min_res.score <= alpha_min || min_res.score >= beta_min)) {
                     try {
-                        min_score = this->minimax_root(board, per_algo_depth, -INF, INF, depth, pool_re2);
+                        Searcher runner;
+                        runner.start_time = this->start_time;
+                        runner.time_limit = this->time_limit;
+                        runner.node_limit = this->node_limit;
+                        auto pool_re2 = std::make_shared<ThreadPool>(1);
+                        int sc = runner.minimax_root(board, per_algo_depth, -INF, INF, depth, pool_re2);
+                        min_res.score = sc;
+                        min_res.seldepth = std::max(min_res.seldepth, runner.max_seldepth);
+                        min_res.nodes += runner.nodes;
                     } catch(...) {}
                 }
+
+                // add nodes from runs into this Searcher's nodes
+                try { this->nodes += neg_res.nodes; } catch(...) {}
+                try { this->nodes += min_res.nodes; } catch(...) {}
+
+                // update per-algo seldepths and global max_seldepth (for internal tracking)
+                neg_seldepth = neg_res.seldepth;
+                min_seldepth = min_res.seldepth;
+                if (neg_seldepth > this->max_seldepth) this->max_seldepth = neg_seldepth;
+                if (min_seldepth > this->max_seldepth) this->max_seldepth = min_seldepth;
+
+                neg_score = neg_res.score;
+                min_score = min_res.score;
 
                 // After both roots run, extract PVs/moves from TT like before
                 {
@@ -529,14 +580,35 @@ namespace QuantumOX {
 
             } else {
                 // default behavior (sequential) but still split depth for each algorithm as requested:
-                // run negamax (with per_algo_depth)
-                neg_score = negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+                // run negamax (with per_algo_depth) on a runner so we can capture seldepth
+                {
+                    Searcher runner;
+                    runner.start_time = this->start_time;
+                    runner.time_limit = this->time_limit;
+                    runner.node_limit = this->node_limit;
+                    try {
+                        neg_score = runner.negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+                    } catch(...) { neg_score = -INF; }
+                    // collect runner stats
+                    try { this->nodes += runner.nodes; } catch(...) {}
+                    neg_seldepth = runner.max_seldepth;
+                    if (neg_seldepth > this->max_seldepth) this->max_seldepth = neg_seldepth;
+                }
 
                 // aspiration fail -> full-window re-search
                 if (per_algo_depth > 0 && (depth > 1) && (neg_score <= alpha_neg || neg_score >= beta_neg)) {
-                    alpha_neg = -INF; beta_neg = INF;
-                    neg_score = negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+                    Searcher runner2;
+                    runner2.start_time = this->start_time;
+                    runner2.time_limit = this->time_limit;
+                    runner2.node_limit = this->node_limit;
+                    try {
+                        neg_score = runner2.negamax_root(board, per_algo_depth, -INF, INF, depth, pool);
+                    } catch(...) { neg_score = -INF; }
+                    try { this->nodes += runner2.nodes; } catch(...) {}
+                    neg_seldepth = std::max(neg_seldepth, runner2.max_seldepth);
+                    if (neg_seldepth > this->max_seldepth) this->max_seldepth = neg_seldepth;
                 }
+
                 {
                     TTEntry e;
                     if (shared_tt_plain_get(key_plain, e)) neg_move = e.best_move;
@@ -545,12 +617,33 @@ namespace QuantumOX {
 
                 if (should_abort()) break;
 
-                // Minimax pass (sequential), also with per_algo_depth
-                min_score = minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
-                if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
-                    alpha_min = -INF; beta_min = INF;
-                    min_score = minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
+                // Minimax pass (sequential), also with per_algo_depth on a runner
+                {
+                    Searcher runner_m;
+                    runner_m.start_time = this->start_time;
+                    runner_m.time_limit = this->time_limit;
+                    runner_m.node_limit = this->node_limit;
+                    try {
+                        min_score = runner_m.minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
+                    } catch(...) { min_score = -INF; }
+                    try { this->nodes += runner_m.nodes; } catch(...) {}
+                    min_seldepth = runner_m.max_seldepth;
+                    if (min_seldepth > this->max_seldepth) this->max_seldepth = min_seldepth;
                 }
+
+                if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
+                    Searcher runner_m2;
+                    runner_m2.start_time = this->start_time;
+                    runner_m2.time_limit = this->time_limit;
+                    runner_m2.node_limit = this->node_limit;
+                    try {
+                        min_score = runner_m2.minimax_root(board, per_algo_depth, -INF, INF, depth, pool);
+                    } catch(...) { min_score = -INF; }
+                    try { this->nodes += runner_m2.nodes; } catch(...) {}
+                    min_seldepth = std::max(min_seldepth, runner_m2.max_seldepth);
+                    if (min_seldepth > this->max_seldepth) this->max_seldepth = min_seldepth;
+                }
+
                 {
                     uint64_t rootk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
                     TTEntry e;
@@ -562,12 +655,20 @@ namespace QuantumOX {
                 }
             }
 
+            // combine seldepths (we sum both algorithms' seldepth values)
+            combined_seldepth = neg_seldepth + min_seldepth;
+            // also keep global max_seldepth to reflect maximum reached by any subsearch (for backward compatibility)
+            if (combined_seldepth < this->max_seldepth) {
+                // preserve the internal max if it is larger than sum (rare), else we keep sum
+                combined_seldepth = std::max(combined_seldepth, this->max_seldepth);
+            }
+
             prev_neg_score = neg_score;
             prev_min_score = min_score;
 
             if (should_abort()) break;
 
-            // decide
+            // decide which algorithm to prefer for chosen move
             std::string selector = "negamax";
             int chosen_score = neg_score;
             std::optional<int> chosen_move = neg_move;
@@ -589,10 +690,10 @@ namespace QuantumOX {
                 best_pv = chosen_pv;
             }
 
-            // record info
+            // record info (use combined_seldepth for seldepth)
             InfoRecord ir;
             ir.depth = depth;
-            ir.seldepth = max_seldepth;
+            ir.seldepth = combined_seldepth;
             ir.score = best_score;
             ir.nodes = nodes;
             ir.time_ms = elapsed_ms();
@@ -610,7 +711,7 @@ namespace QuantumOX {
 
             info_token("info");
             info_token("depth"); info_token(std::to_string(depth));
-            info_token("seldepth"); info_token(std::to_string(max_seldepth));
+            info_token("seldepth"); info_token(std::to_string(ir.seldepth));
             info_token("score"); info_token(std::to_string(best_score));
             info_token("nodes"); info_token(std::to_string(nodes));
             info_token("nps"); info_token(std::to_string(ir.nps));
@@ -625,7 +726,7 @@ namespace QuantumOX {
             info_token("pv");
             for (int mv : best_pv) info_token(std::to_string(mv));
 
-            // useful for debug
+            // helpful debug fields
             info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
 
             // finally end line
