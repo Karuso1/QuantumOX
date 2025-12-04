@@ -36,7 +36,8 @@ namespace QuantumOX {
     // Default options
     inline constexpr auto DEFAULT_GRID = "3x3";
     inline constexpr auto DEFAULT_THREADS = 1; // configure the default threads if you want
-    inline const std::array<std::string, 4> SUPPORTED_GRIDS = {"3x3", "4x4", "5x5", "3x3x3"};
+    inline constexpr auto DEFAULT_HASH = 16;
+    inline const std::array<std::string, 9> SUPPORTED_GRIDS = {"3x3", "4x4", "5x5", "6x6", "7x7", "8x8", "15x15", "3x3x3", "4x4x4"};
     
     // Player/square symbols
     inline constexpr auto SYMBOL_EMPTY = '.';
