@@ -38,6 +38,7 @@
 #include <memory>
 #include <shared_mutex> // for shared mutex
 #include <cmath>
+#include <numeric> // for accumulate
 
 using namespace std::chrono;
 
@@ -391,6 +392,14 @@ namespace QuantumOX {
         std::cout << token << " " << std::flush; // flush makes it appear immediately
     };
 
+    // ---------- RootEvalResult (moved up so it's usable during logging) ------
+    struct RootEvalResult {
+        int move;
+        int score;
+        std::vector<int> pv; // root move followed by child's pv
+        int nodes;
+        int seldepth;
+    };
 
     // ---------------- core search loop (iterative deepening) ----------------
     // We'll capture seldepth for negamax and minimax separately, then combine them
@@ -472,7 +481,11 @@ namespace QuantumOX {
             std::optional<int> neg_move = std::nullopt, min_move = std::nullopt;
 
             // Helper struct for returning algorithm results from async/sequential runners
-            struct AlgoResult { int score; int seldepth; int nodes; };
+            struct AlgoResult { int score; int seldepth; int nodes; std::vector<RootEvalResult> root_moves; };
+
+            // containers to collect per-root-move results when we invoke roots (used for hybrid logging)
+            std::vector<RootEvalResult> neg_root_results;
+            std::vector<RootEvalResult> min_root_results;
 
             // If exactly 2 threads are configured, run minimax & negamax concurrently,
             // each using a tiny local pool of 1 thread to avoid excessive nested parallelism.
@@ -482,39 +495,54 @@ namespace QuantumOX {
 
                 // Launch negamax on separate Searcher runner (so we can capture its max_seldepth)
                 auto neg_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg]() mutable -> AlgoResult {
-                    AlgoResult ar{ -INF, 0, 0 };
+                    AlgoResult ar; ar.score = -INF; ar.seldepth = 0; ar.nodes = 0;
                     try {
                         Searcher runner;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
-                        int sc = runner.negamax_root(const_cast<Board&>(b), per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg);
+                        // capture move-by-move results into local vector
+                        std::vector<RootEvalResult> local_moves;
+                        int sc = runner.negamax_root(const_cast<Board&>(b), per_algo_depth, alpha_neg, beta_neg, depth, local_pool_neg,
+                            // on_move callback
+                            [&](const RootEvalResult& rr) {
+                                local_moves.push_back(rr);
+                            }
+                        );
                         ar.score = sc;
                         ar.seldepth = runner.max_seldepth;
                         ar.nodes = runner.nodes;
+                        ar.root_moves = std::move(local_moves);
                     } catch(...) {}
                     return ar;
                 });
 
                 // Launch minimax on separate Searcher runner
-                auto min_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_min, beta_min, depth]() mutable -> AlgoResult {
-                    AlgoResult ar{ -INF, 0, 0 };
+                auto min_fut = std::async(std::launch::async, [this, b = board, per_algo_depth, alpha_min, beta_min, depth, local_pool_min]() mutable -> AlgoResult {
+                    AlgoResult ar; ar.score = -INF; ar.seldepth = 0; ar.nodes = 0;
                     try {
                         auto pool_for_min = std::make_shared<ThreadPool>(1);
                         Searcher runner;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
-                        int sc = runner.minimax_root(const_cast<Board&>(b), per_algo_depth, alpha_min, beta_min, depth, pool_for_min);
+                        std::vector<RootEvalResult> local_moves;
+                        int sc = runner.minimax_root(const_cast<Board&>(b), per_algo_depth, alpha_min, beta_min, depth, pool_for_min,
+                            [&](const RootEvalResult& rr) {
+                                local_moves.push_back(rr);
+                            }
+                        );
                         ar.score = sc;
                         ar.seldepth = runner.max_seldepth;
                         ar.nodes = runner.nodes;
+                        ar.root_moves = std::move(local_moves);
                     } catch(...) {}
                     return ar;
                 });
 
                 // collect results (and handle aspiration fail re-searchs sequentially if needed)
-                AlgoResult neg_res{ -INF, 0, 0 }, min_res{ -INF, 0, 0 };
+                AlgoResult neg_res; neg_res.score = -INF; neg_res.seldepth = 0; neg_res.nodes = 0;
+                AlgoResult min_res; min_res.score = -INF; min_res.seldepth = 0; min_res.nodes = 0;
                 try { neg_res = neg_fut.get(); } catch(...) { neg_res.score = -INF; }
                 // aspiration fail -> re-search negamax full window if needed
                 if (per_algo_depth > 0 && (depth > 1) && (neg_res.score <= alpha_neg || neg_res.score >= beta_neg)) {
@@ -523,12 +551,16 @@ namespace QuantumOX {
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
+                        std::vector<RootEvalResult> extra_moves;
                         auto pool_re = std::make_shared<ThreadPool>(1);
-                        int sc = runner.negamax_root(board, per_algo_depth, -INF, INF, depth, pool_re);
-                        // update results: sum nodes into our main node counter below
+                        int sc = runner.negamax_root(board, per_algo_depth, -INF, INF, depth, pool_re,
+                            [&](const RootEvalResult& rr) { extra_moves.push_back(rr); }
+                        );
                         neg_res.score = sc;
                         neg_res.seldepth = std::max(neg_res.seldepth, runner.max_seldepth);
                         neg_res.nodes += runner.nodes;
+                        // append any extra move records (best-effort)
+                        neg_res.root_moves.insert(neg_res.root_moves.end(), extra_moves.begin(), extra_moves.end());
                     } catch(...) {}
                 }
 
@@ -540,11 +572,15 @@ namespace QuantumOX {
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
+                        std::vector<RootEvalResult> extra_moves2;
                         auto pool_re2 = std::make_shared<ThreadPool>(1);
-                        int sc = runner.minimax_root(board, per_algo_depth, -INF, INF, depth, pool_re2);
+                        int sc = runner.minimax_root(board, per_algo_depth, -INF, INF, depth, pool_re2,
+                            [&](const RootEvalResult& rr) { extra_moves2.push_back(rr); }
+                        );
                         min_res.score = sc;
                         min_res.seldepth = std::max(min_res.seldepth, runner.max_seldepth);
                         min_res.nodes += runner.nodes;
+                        min_res.root_moves.insert(min_res.root_moves.end(), extra_moves2.begin(), extra_moves2.end());
                     } catch(...) {}
                 }
 
@@ -578,6 +614,10 @@ namespace QuantumOX {
                     try { min_pv = build_pv(board); } catch(...) { if (min_move) min_pv = {*min_move}; }
                 }
 
+                // move results back to local collectors for hybrid printing
+                neg_root_results = std::move(neg_res.root_moves);
+                min_root_results = std::move(min_res.root_moves);
+
             } else {
                 // default behavior (sequential) but still split depth for each algorithm as requested:
                 // run negamax (with per_algo_depth) on a runner so we can capture seldepth
@@ -586,8 +626,13 @@ namespace QuantumOX {
                     runner.start_time = this->start_time;
                     runner.time_limit = this->time_limit;
                     runner.node_limit = this->node_limit;
+                    std::vector<RootEvalResult> local_moves;
                     try {
-                        neg_score = runner.negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool);
+                        int sc = runner.negamax_root(board, per_algo_depth, alpha_neg, beta_neg, depth, pool,
+                            [&](const RootEvalResult& rr) { local_moves.push_back(rr); }
+                        );
+                        neg_score = sc;
+                        neg_root_results = std::move(local_moves);
                     } catch(...) { neg_score = -INF; }
                     // collect runner stats
                     try { this->nodes += runner.nodes; } catch(...) {}
@@ -601,8 +646,14 @@ namespace QuantumOX {
                     runner2.start_time = this->start_time;
                     runner2.time_limit = this->time_limit;
                     runner2.node_limit = this->node_limit;
+                    std::vector<RootEvalResult> local_moves2;
                     try {
-                        neg_score = runner2.negamax_root(board, per_algo_depth, -INF, INF, depth, pool);
+                        int sc = runner2.negamax_root(board, per_algo_depth, -INF, INF, depth, pool,
+                            [&](const RootEvalResult& rr) { local_moves2.push_back(rr); }
+                        );
+                        neg_score = sc;
+                        // append results
+                        for (auto &r : local_moves2) neg_root_results.push_back(r);
                     } catch(...) { neg_score = -INF; }
                     try { this->nodes += runner2.nodes; } catch(...) {}
                     neg_seldepth = std::max(neg_seldepth, runner2.max_seldepth);
@@ -623,8 +674,13 @@ namespace QuantumOX {
                     runner_m.start_time = this->start_time;
                     runner_m.time_limit = this->time_limit;
                     runner_m.node_limit = this->node_limit;
+                    std::vector<RootEvalResult> local_moves_m;
                     try {
-                        min_score = runner_m.minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool);
+                        int sc = runner_m.minimax_root(board, per_algo_depth, alpha_min, beta_min, depth, pool,
+                            [&](const RootEvalResult& rr) { local_moves_m.push_back(rr); }
+                        );
+                        min_score = sc;
+                        min_root_results = std::move(local_moves_m);
                     } catch(...) { min_score = -INF; }
                     try { this->nodes += runner_m.nodes; } catch(...) {}
                     min_seldepth = runner_m.max_seldepth;
@@ -636,8 +692,13 @@ namespace QuantumOX {
                     runner_m2.start_time = this->start_time;
                     runner_m2.time_limit = this->time_limit;
                     runner_m2.node_limit = this->node_limit;
+                    std::vector<RootEvalResult> local_moves_m2;
                     try {
-                        min_score = runner_m2.minimax_root(board, per_algo_depth, -INF, INF, depth, pool);
+                        int sc = runner_m2.minimax_root(board, per_algo_depth, -INF, INF, depth, pool,
+                            [&](const RootEvalResult& rr) { local_moves_m2.push_back(rr); }
+                        );
+                        min_score = sc;
+                        for (auto &r : local_moves_m2) min_root_results.push_back(r);
                     } catch(...) { min_score = -INF; }
                     try { this->nodes += runner_m2.nodes; } catch(...) {}
                     min_seldepth = std::max(min_seldepth, runner_m2.max_seldepth);
@@ -668,7 +729,7 @@ namespace QuantumOX {
 
             if (should_abort()) break;
 
-            // decide which algorithm to prefer for chosen move
+            // decide which algorithm to prefer for chosen move (this chooses best overall PV to use)
             std::string selector = "negamax";
             int chosen_score = neg_score;
             std::optional<int> chosen_move = neg_move;
@@ -709,28 +770,152 @@ namespace QuantumOX {
                 std::min(1000.0, (double(current_tt_entries) * 1000.0 / double(hash_size_entries)))
             );
 
-            info_token("info");
-            info_token("depth"); info_token(std::to_string(depth));
-            info_token("seldepth"); info_token(std::to_string(ir.seldepth));
-            info_token("score"); info_token(std::to_string(best_score));
-            info_token("nodes"); info_token(std::to_string(nodes));
-            info_token("nps"); info_token(std::to_string(ir.nps));
-            info_token("hashfull"); info_token(std::to_string(hashfull_permille));
+            // --- Special hybrid logging for depths >= 34 ---
+            bool hybrid = (depth >= 34);
 
-            // PV moves
-            info_token("minimaxpv");
-            for (int mv : min_pv) info_token(std::to_string(mv));
-            info_token("negamaxpv");
-            for (int mv : neg_pv) info_token(std::to_string(mv));
-            info_token("time"); info_token(std::to_string(elapsed_ms()));
-            info_token("pv");
-            for (int mv : best_pv) info_token(std::to_string(mv));
+            if (!hybrid) {
+                info_token("info");
+                info_token("depth"); info_token(std::to_string(depth));
+                info_token("seldepth"); info_token(std::to_string(ir.seldepth));
+                info_token("score"); info_token(std::to_string(best_score));
+                info_token("nodes"); info_token(std::to_string(nodes));
+                info_token("nps"); info_token(std::to_string(ir.nps));
+                info_token("hashfull"); info_token(std::to_string(hashfull_permille));
 
-            // helpful debug fields
-            info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
+                // PV moves
+                info_token("minimaxpv");
+                for (int mv : min_pv) info_token(std::to_string(mv));
+                info_token("negamaxpv");
+                for (int mv : neg_pv) info_token(std::to_string(mv));
+                info_token("time"); info_token(std::to_string(elapsed_ms()));
+                info_token("pv");
+                for (int mv : best_pv) info_token(std::to_string(mv));
 
-            // finally end line
-            std::cout << std::endl;
+                // helpful debug fields
+                info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
+
+                // finally end line
+                std::cout << std::endl;
+            } else {
+                // ----- HYBRID MODE LOGIC START -----
+                // We have per-root move lists from both algorithms in:
+                //   neg_root_results (order is the order the negamax root evaluated moves)
+                //   min_root_results (order is the order the minimax root evaluated moves)
+                //
+                // We'll print currmove lines for each currmovenumber.
+                // The "currmovenumber" is defined per the algorithm's generation ordering.
+                //
+                // Determine starting algorithm for alternation:
+                std::string start_alg = (min_score >= neg_score) ? "minimax" : "minimax"; // prefer minimax as typical default per spec
+                // (spec mostly uses minimax as starting default; but if you want to change to negamax if it was clearly higher, you can)
+                // For deterministic behavior: follow spec and start with minimax.
+
+                // Prepare maps for quick index lookup
+                // root_results vectors contain RootEvalResult in the order each algorithm generated them.
+                size_t max_moves = std::max(neg_root_results.size(), min_root_results.size());
+                if (max_moves == 0) max_moves = 0; // safe guard
+
+                // vectors to accumulate "selected most-score moves" per algorithm to compute overall
+                std::vector<double> selected_scores_minimax;
+                std::vector<double> selected_scores_negamax;
+
+                // alternate pattern per currmovenumber. Pattern of tests: start_alg, other, start, other (up to 4 tests),
+                // printing each test line. After tests, choose default for next moves based on highest score seen in tests
+                for (size_t idx = 0; idx < max_moves; ++idx) {
+                    size_t currmovenumber = idx + 1;
+                    // test order: 0..3 -> alternate starting with start_alg
+                    for (int t = 0; t < 4; ++t) {
+                        bool use_start_alg = (t % 2 == 0);
+                        std::string alg = use_start_alg ? start_alg : (start_alg == "minimax" ? "negamax" : "minimax");
+                        // determine which algorithm's move at this index exists
+                        if (alg == "minimax") {
+                            if (idx < min_root_results.size()) {
+                                auto &rr = min_root_results[idx];
+                                // print test line
+                                std::cout << "info depth " << depth << " currmove " << rr.move << " currmovenumber " << currmovenumber << " algorithm minimax" << std::endl;
+                            } else {
+                                // no move for this index in minimax, skip print
+                            }
+                        } else { // negamax
+                            if (idx < neg_root_results.size()) {
+                                auto &rr = neg_root_results[idx];
+                                std::cout << "info depth " << depth << " currmove " << rr.move << " currmovenumber " << currmovenumber << " algorithm negamax" << std::endl;
+                            } else {
+                                // no move for this index in negamax, skip
+                            }
+                        }
+                        // allow abort if needed
+                        if (should_abort()) break;
+                    }
+                    if (should_abort()) break;
+
+                    // After the test cycle for this currmovenumber choose default algorithm to generate next moves.
+                    // Decision rule:
+                    //  - Compare the last available score of minimax and negamax for this index (if absent treat as -INF)
+                    int mm_score = (idx < min_root_results.size()) ? min_root_results[idx].score : -INF;
+                    int nn_score = (idx < neg_root_results.size()) ? neg_root_results[idx].score : -INF;
+
+                    std::string chosen_alg_for_index = "minimax";
+                    if (nn_score > mm_score) chosen_alg_for_index = "negamax";
+                    else if (mm_score > nn_score) chosen_alg_for_index = "minimax";
+                    else chosen_alg_for_index = "minimax"; // tie -> prefer minimax
+
+                    if (chosen_alg_for_index == "minimax") {
+                        if (idx < min_root_results.size()) selected_scores_minimax.push_back(static_cast<double>(min_root_results[idx].score));
+                    } else {
+                        if (idx < neg_root_results.size()) selected_scores_negamax.push_back(static_cast<double>(neg_root_results[idx].score));
+                    }
+
+                    // compute overall for chosen algorithm
+                    double overall = 0.0;
+                    if (chosen_alg_for_index == "minimax") {
+                        if (!selected_scores_minimax.empty()) {
+                            overall = std::accumulate(selected_scores_minimax.begin(), selected_scores_minimax.end(), 0.0) / selected_scores_minimax.size();
+                        } else overall = 0.0;
+                    } else {
+                        if (!selected_scores_negamax.empty()) {
+                            overall = std::accumulate(selected_scores_negamax.begin(), selected_scores_negamax.end(), 0.0) / selected_scores_negamax.size();
+                        } else overall = 0.0;
+                    }
+
+                    // round overall normally
+                    long overall_rounded = static_cast<long>(std::floor(overall + 0.5));
+
+                    // Print final default line for this currmovenumber
+                    std::cout << "info depth " << depth << " currmove ";
+                    if (chosen_alg_for_index == "minimax") {
+                        // print chosen move (if exists)
+                        if (idx < min_root_results.size()) std::cout << min_root_results[idx].move;
+                        else if (idx < neg_root_results.size()) std::cout << neg_root_results[idx].move;
+                        else std::cout << 0;
+                        std::cout << " currmovenumber " << currmovenumber << " algorithm default to minimax (overall " << overall_rounded << ")" << std::endl;
+                    } else {
+                        if (idx < neg_root_results.size()) std::cout << neg_root_results[idx].move;
+                        else if (idx < min_root_results.size()) std::cout << min_root_results[idx].move;
+                        else std::cout << 0;
+                        std::cout << " currmovenumber " << currmovenumber << " algorithm default to negamax (overall " << overall_rounded << ")" << std::endl;
+                    }
+
+                    // The "default" chosen for this currmovenumber could influence the chosen PV at the end of the depth.
+                    // But we will still use the previously chosen overall PV (chosen_pv), which was selected from per-algo root scores.
+                    // Next currmovenumber continues...
+                } // end for each currmovenumber
+
+                // After printing all currmove sequences, now print the "normal final info line" for the depth
+                info_token("info");
+                info_token("depth"); info_token(std::to_string(depth));
+                info_token("seldepth"); info_token(std::to_string(ir.seldepth));
+                info_token("score"); info_token(std::to_string(best_score));
+                info_token("nodes"); info_token(std::to_string(nodes));
+                info_token("nps"); info_token(std::to_string(ir.nps));
+                info_token("hashfull"); info_token(std::to_string(hashfull_permille));
+                info_token("time"); info_token(std::to_string(elapsed_ms()));
+                info_token("pv");
+                for (int mv : chosen_pv) info_token(std::to_string(mv));
+                info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
+                std::cout << std::endl;
+                // ----- HYBRID MODE LOGIC END -----
+            }
 
             if (time_exceeded() || nodes_exceeded()) break;
         }
@@ -745,15 +930,9 @@ namespace QuantumOX {
     }
 
     // ---------- negamax root (parallelized per-root-move) --------------------
-    struct RootEvalResult {
-        int move;
-        int score;
-        std::vector<int> pv; // root move followed by child's pv
-        int nodes;
-        int seldepth;
-    };
-
-    int Searcher::negamax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool) {
+    // Note: added optional callback parameter `on_move` so callers (search()) can
+    // receive per-root-move evaluation records for hybrid logging. Default null -> no callback.
+    int Searcher::negamax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool, std::function<void(const RootEvalResult&)> on_move) {
         ++nodes;
         PlyGuard pg(this);
 
@@ -813,6 +992,8 @@ namespace QuantumOX {
         for (auto &fut : futures) {
             try {
                 RootEvalResult rr = fut.get();
+                // callback for logging if requested
+                try { if (on_move) on_move(rr); } catch(...) {}
                 try { this->nodes += rr.nodes; } catch(...) {}
                 if (rr.seldepth > this->max_seldepth) this->max_seldepth = rr.seldepth;
                 if (rr.score > best_score) {
@@ -968,13 +1149,15 @@ namespace QuantumOX {
     }
 
     // ---------- minimax root (parallelized per-root-move) --------------------
-    int Searcher::minimax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool) {
+    // Note: added optional callback parameter `on_move` so callers (search()) can
+    // receive per-root-move evaluation records for hybrid logging. Default null -> no callback.
+    int Searcher::minimax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool, std::function<void(const RootEvalResult&)> on_move) {
         ++nodes;
         PlyGuard pg(this);
 
         std::string root_player = board.get_side_to_move();
-        uint64_t key_plain = key(board);
-        uint64_t tk = make_root_key(key_plain, root_player.empty() ? 'X' : root_player[0]);
+        uint64_t key_plain_local = key(board);
+        uint64_t tk = make_root_key(key_plain_local, root_player.empty() ? 'X' : root_player[0]);
 
         auto moves = board.legal_moves();
         if (moves.empty()) return evaluate_for_root(board, root_player);
@@ -1045,6 +1228,8 @@ namespace QuantumOX {
         for (auto &fut : futures) {
             try {
                 RootEvalResult rr = fut.get();
+                // callback for logging if requested
+                try { if (on_move) on_move(rr); } catch(...) {}
                 try { this->nodes += rr.nodes; } catch(...) {}
                 if (rr.seldepth > this->max_seldepth) this->max_seldepth = rr.seldepth;
                 if (rr.score > best_score) {
