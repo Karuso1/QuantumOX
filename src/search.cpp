@@ -791,9 +791,6 @@ namespace QuantumOX {
                 info_token("pv");
                 for (int mv : best_pv) info_token(std::to_string(mv));
 
-                // helpful debug fields
-                info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
-
                 // finally end line
                 std::cout << std::endl;
             } else {
@@ -912,7 +909,6 @@ namespace QuantumOX {
                 info_token("time"); info_token(std::to_string(elapsed_ms()));
                 info_token("pv");
                 for (int mv : chosen_pv) info_token(std::to_string(mv));
-                info_token("divided_depth"); info_token(std::to_string(per_algo_depth));
                 std::cout << std::endl;
                 // ----- HYBRID MODE LOGIC END -----
             }
