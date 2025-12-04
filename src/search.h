@@ -36,6 +36,7 @@ namespace QuantumOX {
     // thread-pool implementation. The actual ThreadPool can live in search.cpp
     // or a dedicated threadpool.h and be defined in the QuantumOX namespace.
     class ThreadPool;
+    struct RootEvalResult;
 
     // -------------------- Transposition Table Flag & Entry --------------------
     enum class TTFlag {
@@ -93,10 +94,26 @@ namespace QuantumOX {
 
         // ----------------- Internal helpers -----------------------------
         // Note: ThreadPool is forward-declared above; search.cpp provides the definition.
-        int negamax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool);
+        int negamax_root(
+            Board& board,
+            int depth,
+            int alpha,
+            int beta,
+            int root_depth,
+            std::shared_ptr<ThreadPool> pool,
+            std::function<void(const RootEvalResult&)> on_move
+        );
         int negamax(Board& board, int depth, int alpha, int beta, int root_depth);
         
-        int minimax_root(Board& board, int depth, int alpha, int beta, int root_depth, std::shared_ptr<ThreadPool> pool);
+        int minimax_root(
+            Board& board,
+            int depth,
+            int alpha,
+            int beta,
+            int root_depth,
+            std::shared_ptr<ThreadPool> pool,
+            std::function<void(const RootEvalResult&)> on_move
+        );
         int minimax(Board& board, int depth, int alpha, int beta, const std::string& root_player, int root_depth);
         
         std::vector<int> build_pv(Board& board);
