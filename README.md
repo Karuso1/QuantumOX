@@ -55,8 +55,10 @@ uttti
 id name QuantumOX
 id author Kartik
 
-option name Grid type combo default 3x3 var 3x3 var 4x4 var 5x5 var 3x3x3
+option name Grid type combo default 3x3 var 3x3 var 4x4 var 5x5 var 6x6 var 7x7 var 8x8 var 15x15 var 3x3x3 var 4x4x4
 option name FirstPlayer type combo default X var X var O
+option name Hash type spin default 16 min 1 max 2097152
+option name Threads type spin default 1 min 1 max 512
 utttiok
 isready
 readyok
@@ -66,22 +68,24 @@ grid emptygrid fill 1
 isready
 readyok
 go depth 5
-info depth 1 seldepth 1 score 12 nodes 18 minimaxpv 5 negamaxpv 5 time 0 pv 5
-info depth 2 seldepth 2 score -39 nodes 93 minimaxpv 5 3 negamaxpv 5 3 time 0 pv 5 3
-info depth 3 seldepth 3 score 31 nodes 286 minimaxpv 5 3 2 negamaxpv 5 3 2 time 1 pv 5 3 2
-info depth 4 seldepth 4 score -40 nodes 741 minimaxpv 5 9 4 3 negamaxpv 5 9 2 7 time 3 pv 5 9 2 7
-info depth 5 seldepth 5 score 20 nodes 1645 minimaxpv 5 3 2 8 4 negamaxpv 5 3 2 8 4 time 5 pv 5 3 2 8 4
-bestmove 5 ponder 3
-grid emptygrid fill 1 5 3
+info string Using 1 thread
+info depth 1 seldepth 2 score 12 nodes 18 nps 6000 hashfull 562 minimaxpv 5 negamaxpv 5 time 10 pv 5
+info depth 2 seldepth 2 score 12 nodes 36 nps 3000 hashfull 562 minimaxpv 5 negamaxpv 5 time 18 pv 5
+info depth 3 seldepth 12 score -39 nodes 336 nps 13440 hashfull 1000 minimaxpv 5 3 negamaxpv 5 3 time 32 pv 5 3
+info depth 4 seldepth 2 score 69 nodes 363 nps 10676 hashfull 1000 minimaxpv 5 3 negamaxpv 6 5 time 41 pv 6 5
+info depth 5 seldepth 12 score -39 nodes 847 nps 16607 hashfull 1000 minimaxpv 5 3 negamaxpv 5 7 time 56 pv 5 7
+bestmove 5 ponder 7
+grid emptygrid fill 1 5 7
 isready
 readyok
 go depth 5
-info depth 1 seldepth 1 score 20 nodes 14 minimaxpv 2 8 4 negamaxpv 8 time 0 pv 2 8 4
-info depth 2 seldepth 2 score 20 nodes 33 minimaxpv 2 8 4 negamaxpv 2 8 4 time 0 pv 2 8 4
-info depth 3 seldepth 3 score 20 nodes 52 minimaxpv 2 8 4 negamaxpv 2 8 4 time 0 pv 2 8 4
-info depth 4 seldepth 4 score -40 nodes 172 minimaxpv 2 8 7 6 negamaxpv 2 8 7 6 time 0 pv 2 8 7 6
-info depth 5 seldepth 5 score 0 nodes 339 minimaxpv 2 8 7 6 9 negamaxpv 2 8 7 6 9 time 0 pv 2 8 7 6 9
-bestmove 2 ponder 8
+info string Using 1 thread
+info depth 1 seldepth 2 score 31 nodes 14 nps 7000 hashfull 1000 minimaxpv 4 negamaxpv 4 time 10 pv 4
+info depth 2 seldepth 2 score 31 nodes 28 nps 2545 hashfull 1000 minimaxpv 4 negamaxpv 4 time 16 pv 4
+info depth 3 seldepth 4 score -20 nodes 102 nps 5666 hashfull 1000 minimaxpv 4 6 negamaxpv 4 6 time 24 pv 4 6
+info depth 4 seldepth 2 score 90 nodes 123 nps 4730 hashfull 1000 minimaxpv 4 6 negamaxpv 6 4 time 31 pv 6 4
+info depth 5 seldepth 9 score 20 nodes 266 nps 7600 hashfull 1000 minimaxpv 4 6 negamaxpv 4 6 8 time 41 pv 4 6 8
+bestmove 4 ponder 6
 ```
 
 ## Installation
