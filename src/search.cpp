@@ -781,12 +781,6 @@ namespace QuantumOX {
                 info_token("nodes"); info_token(std::to_string(nodes));
                 info_token("nps"); info_token(std::to_string(ir.nps));
                 info_token("hashfull"); info_token(std::to_string(hashfull_permille));
-
-                // PV moves
-                info_token("minimaxpv");
-                for (int mv : min_pv) info_token(std::to_string(mv));
-                info_token("negamaxpv");
-                for (int mv : neg_pv) info_token(std::to_string(mv));
                 info_token("time"); info_token(std::to_string(elapsed_ms()));
                 info_token("pv");
                 for (int mv : best_pv) info_token(std::to_string(mv));
