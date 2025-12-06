@@ -1099,16 +1099,6 @@ namespace QuantumOX {
 
         bool first = true;
         int move_index = 0;
-        for (int mv : moves) {
-            if (should_abort()) return 0;
-            board.make_move(mv);
-            int eval = -negamax(board, depth - 1, -beta, -alpha, root_depth);
-            board.unmake_move(mv);
-            int maxEval = std::numeric_limits<int>::min();
-            if (eval > maxEval) maxEval = eval;
-            if (eval > alpha) alpha = eval;
-            if (alpha >= beta) break;
-        }
         for (int mv : ordered) {
             if (should_abort()) {
                 if (abort_flag) abort_flag->store(true);
