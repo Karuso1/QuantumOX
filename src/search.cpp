@@ -262,7 +262,7 @@ namespace QuantumOX {
           start_time(),
           time_limit(std::nullopt),
           node_limit(std::nullopt),
-          abort_flag(false),
+          abort_flag(std::make_shared<std::atomic<bool>>(false)),
           max_seldepth(0),
           current_seldepth(0) {}
 
@@ -308,9 +308,14 @@ namespace QuantumOX {
 
     bool Searcher::nodes_exceeded() const { if (!node_limit.has_value()) return false; return nodes >= *node_limit; }
 
-    bool Searcher::should_abort() const { return abort_flag || time_exceeded() || nodes_exceeded(); }
+    bool Searcher::should_abort() const {
+        bool ab = abort_flag ? abort_flag->load() : false;
+        return ab || time_exceeded() || nodes_exceeded();
+    }
 
-    void Searcher::request_abort() { abort_flag = true; }
+    void Searcher::request_abort() {
+        if (abort_flag) abort_flag->store(true);
+    }
 
     // ---------- Utility: order moves with advanced heuristics ---------------
     // returns vector of moves sorted (best first) but DOES NOT modify board.
@@ -417,7 +422,8 @@ namespace QuantumOX {
         start_time = std::chrono::steady_clock::now();
         time_limit = time_ms_opt ? std::optional<double>(*time_ms_opt / 1000.0) : std::nullopt;
         node_limit = nodes_limit_opt;
-        abort_flag = false;
+        if (!abort_flag) abort_flag = std::make_shared<std::atomic<bool>>(false);
+        else abort_flag->store(false);
 
         std::optional<int> best_move = std::nullopt;
         int best_score = 0;
@@ -498,6 +504,7 @@ namespace QuantumOX {
                     AlgoResult ar; ar.score = -INF; ar.seldepth = 0; ar.nodes = 0;
                     try {
                         Searcher runner;
+                        runner.abort_flag = this->abort_flag;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
@@ -523,6 +530,7 @@ namespace QuantumOX {
                     try {
                         auto pool_for_min = std::make_shared<ThreadPool>(1);
                         Searcher runner;
+                        runner.abort_flag = this->abort_flag;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
@@ -548,6 +556,7 @@ namespace QuantumOX {
                 if (per_algo_depth > 0 && (depth > 1) && (neg_res.score <= alpha_neg || neg_res.score >= beta_neg)) {
                     try {
                         Searcher runner;
+                        runner.abort_flag = this->abort_flag;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
@@ -569,6 +578,7 @@ namespace QuantumOX {
                 if (per_algo_depth > 0 && (depth > 1) && (min_res.score <= alpha_min || min_res.score >= beta_min)) {
                     try {
                         Searcher runner;
+                        runner.abort_flag = this->abort_flag;
                         runner.start_time = this->start_time;
                         runner.time_limit = this->time_limit;
                         runner.node_limit = this->node_limit;
@@ -623,6 +633,7 @@ namespace QuantumOX {
                 // run negamax (with per_algo_depth) on a runner so we can capture seldepth
                 {
                     Searcher runner;
+                    runner.abort_flag = this->abort_flag;
                     runner.start_time = this->start_time;
                     runner.time_limit = this->time_limit;
                     runner.node_limit = this->node_limit;
@@ -643,6 +654,7 @@ namespace QuantumOX {
                 // aspiration fail -> full-window re-search
                 if (per_algo_depth > 0 && (depth > 1) && (neg_score <= alpha_neg || neg_score >= beta_neg)) {
                     Searcher runner2;
+                    runner2.abort_flag = this->abort_flag;
                     runner2.start_time = this->start_time;
                     runner2.time_limit = this->time_limit;
                     runner2.node_limit = this->node_limit;
@@ -671,6 +683,7 @@ namespace QuantumOX {
                 // Minimax pass (sequential), also with per_algo_depth on a runner
                 {
                     Searcher runner_m;
+                    runner_m.abort_flag = this->abort_flag;
                     runner_m.start_time = this->start_time;
                     runner_m.time_limit = this->time_limit;
                     runner_m.node_limit = this->node_limit;
@@ -689,6 +702,7 @@ namespace QuantumOX {
 
                 if (per_algo_depth > 0 && (depth > 1) && (min_score <= alpha_min || min_score >= beta_min)) {
                     Searcher runner_m2;
+                    runner_m2.abort_flag = this->abort_flag;
                     runner_m2.start_time = this->start_time;
                     runner_m2.time_limit = this->time_limit;
                     runner_m2.node_limit = this->node_limit;
@@ -954,6 +968,7 @@ namespace QuantumOX {
                     try { local_board.make_move(mv); } catch(...) { return rr; }
 
                     Searcher s_local;
+                    s_local.abort_flag = this->abort_flag;
                     s_local.start_time = this->start_time;
                     s_local.time_limit = this->time_limit;
                     s_local.node_limit = this->node_limit;
@@ -996,7 +1011,10 @@ namespace QuantumOX {
             } catch(...) {
                 // ignore individual failure
             }
-            if (should_abort()) { abort_flag = true; break; }
+            if (should_abort()) {
+                if (abort_flag) abort_flag->store(true);
+                break;
+            }
         }
 
         if (!best_move.has_value()) best_score = evaluate_terminal(board);
@@ -1043,7 +1061,7 @@ namespace QuantumOX {
         ++nodes;
         PlyGuard pg(this);
 
-        if (should_abort()) { abort_flag = true; return 0; }
+        if (should_abort()) return 0;
 
         uint64_t k = key(board);
         TTEntry entry;
@@ -1081,8 +1099,21 @@ namespace QuantumOX {
 
         bool first = true;
         int move_index = 0;
+        for (int mv : moves) {
+            if (should_abort()) return 0;
+            board.make_move(mv);
+            int eval = -negamax(board, depth - 1, -beta, -alpha, root_depth);
+            board.unmake_move(mv);
+            int maxEval = std::numeric_limits<int>::min();
+            if (eval > maxEval) maxEval = eval;
+            if (eval > alpha) alpha = eval;
+            if (alpha >= beta) break;
+        }
         for (int mv : ordered) {
-            if (should_abort()) { abort_flag = true; break; }
+            if (should_abort()) {
+                if (abort_flag) abort_flag->store(true);
+                break;
+            }
             ++move_index;
             try { board.make_move(mv); } catch(...) { continue; }
 
@@ -1193,6 +1224,7 @@ namespace QuantumOX {
                     try { local_board.make_move(mv); } catch(...) { return rr; }
 
                     Searcher s_local;
+                    s_local.abort_flag = this->abort_flag;
                     s_local.start_time = this->start_time;
                     s_local.time_limit = this->time_limit;
                     s_local.node_limit = this->node_limit;
@@ -1229,7 +1261,10 @@ namespace QuantumOX {
                     shared_tt_root_store(tk, e);
                 }
             } catch(...) {}
-            if (should_abort()) { abort_flag = true; break; }
+            if (should_abort()) {
+                if (abort_flag) abort_flag->store(true);
+                break;
+            }
         }
 
         if (!best_move.has_value()) best_score = evaluate_for_root(board, root_player);
@@ -1241,7 +1276,10 @@ namespace QuantumOX {
         ++nodes;
         PlyGuard pg(this);
 
-        if (should_abort()) { abort_flag = true; return 0; }
+        if (should_abort()) {
+            if (abort_flag) abort_flag->store(true);
+            return 0;
+        }
 
         uint64_t kp = key(board);
         uint64_t tk = make_root_key(kp, root_player.empty() ? 'X' : root_player[0]);
@@ -1296,7 +1334,10 @@ namespace QuantumOX {
 
         int move_idx = 0;
         for (int mv : ordered) {
-            if (should_abort()) { abort_flag = true; break; }
+            if (should_abort()) {
+                if (abort_flag) abort_flag->store(true);
+                break;
+            }
             ++move_idx;
             try { board.make_move(mv); } catch(...) { continue; }
 
