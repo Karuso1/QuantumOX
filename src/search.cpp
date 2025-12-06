@@ -452,7 +452,7 @@ namespace QuantumOX {
             max_seldepth = 0;
             current_seldepth = 0;
 
-            // compute split depth according to user's rule
+            // compute split depth
             int per_algo_depth = split_depth_for(depth);
             // ensure non-negative
             if (per_algo_depth < 0) per_algo_depth = 0;
