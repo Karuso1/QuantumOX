@@ -19,6 +19,7 @@
 #ifndef SEARCH_H
 #define SEARCH_H
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -147,7 +148,7 @@ namespace QuantumOX {
         std::chrono::steady_clock::time_point start_time;
         std::optional<double> time_limit; // seconds
         std::optional<int> node_limit;
-        bool abort_flag{false};
+        std::shared_ptr<std::atomic<bool>> abort_flag;
 
         // ----------------- Selective depth tracking -----------------------
         // Real seldepth tracking: increment on every recursion entry (push_ply)
