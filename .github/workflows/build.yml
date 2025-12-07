@@ -15,25 +15,7 @@ jobs:
         os: [ubuntu, windows, macos]
         arch: [
           x86-64-avx512icl,
-          x86-64-vnni512,
-          x86-64-avx512,
-          x86-64-avxvnni,
-          x86-64-bmi2,
-          x86-64-avx2,
-          x86-64-sse41-popcnt,
-          x86-64,
-          x86-32,
-          ppc-64-vsx,
-          ppc-64-altivec,
-          armv8-dotprod,
-          armv8,
-          armv7-neon,
-          armv7,
-          loongarch64-lasx,
-          loongarch64-lsx,
-          loongarch64,
-          apple-silicon,
-          riscv64
+          x86-64-vnni512
         ]
 
     steps:
