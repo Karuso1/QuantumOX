@@ -536,7 +536,7 @@ int main() {
                 std::cout.flush();
             } else if (cmd == "quit" || cmd == "exit") {
                 running = false;
-                break;
+                std::exit(0);
             } else {
                 std::cout << "Unknown command: " << tokens[0]
                           << ", type 'help' for UTTTI commands\n";
