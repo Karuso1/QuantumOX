@@ -812,100 +812,64 @@ namespace QuantumOX {
                 //
                 // Determine starting algorithm for alternation:
                 std::string start_alg = (min_score >= neg_score) ? "minimax" : "minimax"; // prefer minimax as typical default per spec
-                // (spec mostly uses minimax as starting default; but if you want to change to negamax if it was clearly higher, you can)
-                // For deterministic behavior: follow spec and start with minimax.
-
-                // Prepare maps for quick index lookup
-                // root_results vectors contain RootEvalResult in the order each algorithm generated them.
+                            
                 size_t max_moves = std::max(neg_root_results.size(), min_root_results.size());
                 if (max_moves == 0) max_moves = 0; // safe guard
-
-                // vectors to accumulate "selected most-score moves" per algorithm to compute overall
+                            
                 std::vector<double> selected_scores_minimax;
                 std::vector<double> selected_scores_negamax;
-
-                // alternate pattern per currmovenumber. Pattern of tests: start_alg, other, start, other (up to 4 tests),
-                // printing each test line. After tests, choose default for next moves based on highest score seen in tests
+                            
+                std::unordered_set<int> printed_moves; // track already printed moves
+                size_t currmovenumber = 1;             // sequential numbering for unique moves
+                            
                 for (size_t idx = 0; idx < max_moves; ++idx) {
-                    size_t currmovenumber = idx + 1;
-                    // test order: 0..3 -> alternate starting with start_alg
-                    for (int t = 0; t < 4; ++t) {
-                        bool use_start_alg = (t % 2 == 0);
-                        std::string alg = use_start_alg ? start_alg : (start_alg == "minimax" ? "negamax" : "minimax");
-                        // determine which algorithm's move at this index exists
-                        if (alg == "minimax") {
-                            if (idx < min_root_results.size()) {
-                                auto &rr = min_root_results[idx];
-                                // print test line
-                                std::cout << "info depth " << depth << " currmove " << rr.move << " currmovenumber " << currmovenumber << " algorithm minimax" << std::endl;
-                            } else {
-                                // no move for this index in minimax, skip print
-                            }
-                        } else { // negamax
-                            if (idx < neg_root_results.size()) {
-                                auto &rr = neg_root_results[idx];
-                                std::cout << "info depth " << depth << " currmove " << rr.move << " currmovenumber " << currmovenumber << " algorithm negamax" << std::endl;
-                            } else {
-                                // no move for this index in negamax, skip
-                            }
-                        }
-                        // allow abort if needed
-                        if (should_abort()) break;
-                    }
-                    if (should_abort()) break;
-
-                    // After the test cycle for this currmovenumber choose default algorithm to generate next moves.
-                    // Decision rule:
-                    //  - Compare the last available score of minimax and negamax for this index (if absent treat as -INF)
+                
+                    // Decide which algorithm to use for this currmovenumber
                     int mm_score = (idx < min_root_results.size()) ? min_root_results[idx].score : -INF;
                     int nn_score = (idx < neg_root_results.size()) ? neg_root_results[idx].score : -INF;
-
+                
                     std::string chosen_alg_for_index = "minimax";
                     if (nn_score > mm_score) chosen_alg_for_index = "negamax";
                     else if (mm_score > nn_score) chosen_alg_for_index = "minimax";
                     else chosen_alg_for_index = "minimax"; // tie -> prefer minimax
-
+                
+                    // select move to print
+                    int currmove = 0;
                     if (chosen_alg_for_index == "minimax") {
-                        if (idx < min_root_results.size()) selected_scores_minimax.push_back(static_cast<double>(min_root_results[idx].score));
+                        if (idx < min_root_results.size()) {
+                            currmove = min_root_results[idx].move;
+                            selected_scores_minimax.push_back(static_cast<double>(min_root_results[idx].score));
+                        }
                     } else {
-                        if (idx < neg_root_results.size()) selected_scores_negamax.push_back(static_cast<double>(neg_root_results[idx].score));
+                        if (idx < neg_root_results.size()) {
+                            currmove = neg_root_results[idx].move;
+                            selected_scores_negamax.push_back(static_cast<double>(neg_root_results[idx].score));
+                        }
                     }
-
-                    // compute overall for chosen algorithm
+                
+                    // only print if not already printed
+                    if (printed_moves.find(currmove) == printed_moves.end()) {
+                        printed_moves.insert(currmove);
+                        std::cout << "info currmove " << currmove << " currmovenumber " << currmovenumber << std::endl;
+                        currmovenumber++; // increment only for unique moves
+                    }
+                
+                    if (should_abort()) break;
+                
+                    // compute overall for chosen algorithm (kept for logic)
                     double overall = 0.0;
                     if (chosen_alg_for_index == "minimax") {
                         if (!selected_scores_minimax.empty()) {
                             overall = std::accumulate(selected_scores_minimax.begin(), selected_scores_minimax.end(), 0.0) / selected_scores_minimax.size();
-                        } else overall = 0.0;
+                        }
                     } else {
                         if (!selected_scores_negamax.empty()) {
                             overall = std::accumulate(selected_scores_negamax.begin(), selected_scores_negamax.end(), 0.0) / selected_scores_negamax.size();
-                        } else overall = 0.0;
+                        }
                     }
-
-                    // round overall normally
-                    long overall_rounded = static_cast<long>(std::floor(overall + 0.5));
-
-                    // Print final default line for this currmovenumber
-                    std::cout << "info depth " << depth << " currmove ";
-                    if (chosen_alg_for_index == "minimax") {
-                        // print chosen move (if exists)
-                        if (idx < min_root_results.size()) std::cout << min_root_results[idx].move;
-                        else if (idx < neg_root_results.size()) std::cout << neg_root_results[idx].move;
-                        else std::cout << 0;
-                        std::cout << " currmovenumber " << currmovenumber << " algorithm default to minimax (overall " << overall_rounded << ")" << std::endl;
-                    } else {
-                        if (idx < neg_root_results.size()) std::cout << neg_root_results[idx].move;
-                        else if (idx < min_root_results.size()) std::cout << min_root_results[idx].move;
-                        else std::cout << 0;
-                        std::cout << " currmovenumber " << currmovenumber << " algorithm default to negamax (overall " << overall_rounded << ")" << std::endl;
-                    }
-
-                    // The "default" chosen for this currmovenumber could influence the chosen PV at the end of the depth.
-                    // But we will still use the previously chosen overall PV (chosen_pv), which was selected from per-algo root scores.
-                    // Next currmovenumber continues...
+                    [[maybe_unused]] long overall_rounded = static_cast<long>(std::floor(overall + 0.5));
                 } // end for each currmovenumber
-
+                
                 // After printing all currmove sequences, now print the "normal final info line" for the depth
                 info_token("info");
                 info_token("depth"); info_token(std::to_string(depth));
