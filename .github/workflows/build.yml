@@ -14,8 +14,7 @@ jobs:
       matrix:
         os: [ubuntu, windows, macos]
         arch: [
-          x86-64-avx512icl,
-          x86-64-vnni512
+          x86-64-avxvnni
         ]
 
     steps:
