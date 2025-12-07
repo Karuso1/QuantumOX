@@ -8,14 +8,11 @@ on:
 
 jobs:
   build:
-    name: Compile QuantumOX
+    name: Compile QuantumOX (C++)
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu, windows, macos]
-        arch: [
-          x86-64-avxvnni
-        ]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -23,54 +20,71 @@ jobs:
 
       # ---- Install build tools ----
       - name: Install build tools (Linux)
-        if: matrix.os == 'ubuntu'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y g++ make tar
+          sudo apt-get install -y g++ tar
 
       - name: Install build tools (macOS)
-        if: matrix.os == 'macos'
-        run: brew install gnu-tar make || true
+        if: runner.os == 'macOS'
+        run: brew install gnu-tar || true
 
       - name: Install build tools (Windows)
-        if: matrix.os == 'windows'
-        run: choco install mingw make -y || true
+        if: runner.os == 'Windows'
+        run: choco install mingw -y || true
 
-      # ---- Build with Makefile ----
+      # ---- Detect native architecture ----
+      - name: Detect architecture
+        id: native
+        shell: bash
+        run: |
+          arch=$(uname -m)
+          os=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          if [[ "$arch" == "x86_64" ]]; then
+            arch="x86-64"
+          fi
+          echo "os=$os" >> $GITHUB_OUTPUT
+          echo "arch=$arch" >> $GITHUB_OUTPUT
+
+      # ---- Build ----
       - name: Build QuantumOX
         shell: bash
         run: |
           mkdir -p bin
-          arch=${{ matrix.arch }}
-          os=${{ matrix.os }}
+          os=${{ steps.native.outputs.os }}
+          arch=${{ steps.native.outputs.arch }}
           exe_name="quantumox-${os}-${arch}"
-          if [[ "$os" == "windows" ]]; then
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
             exe_name="${exe_name}.exe"
           fi
-          echo "Building -> bin/${exe_name}"
+          echo "Compiling -> bin/${exe_name}"
+          g++ -std=c++20 -O3 -Wall -Wextra src/*.cpp -o "bin/${exe_name}"
 
-          # Build one arch at a time
-          cd src
-          make -j build ARCH=${arch} COMP=g++
-          # Move output to bin/
-          mv quantumox "${{ github.workspace }}/bin/${exe_name}" || echo "Move failed (check binary name)"
-
-      # ---- Package Binary (non-Windows) ----
-      - name: Package Binary (Linux/macOS)
-        if: matrix.os != 'windows'
+      # ---- Package (Linux/macOS only) ----
+      - name: Package Binary (non-Windows)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           cd bin
-          exe="quantumox-${{ matrix.os }}-${{ matrix.arch }}"
+          os="${{ steps.native.outputs.os }}"
+          arch="${{ steps.native.outputs.arch }}"
+          exe="quantumox-${os}-${arch}"
           tar -czf "${exe}.tar.gz" "${exe}"
           rm "${exe}"
           cd ..
+
+      # ---- Verify Output ----
+      - name: Verify Build Output
+        shell: bash
+        run: |
+          echo "Final bin contents:"
+          ls -lh bin/
 
       # ---- Upload Artifacts ----
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: quantumox-${{ matrix.os }}-${{ matrix.arch }}
+          name: quantumox-${{ steps.native.outputs.os }}-${{ steps.native.outputs.arch }}
           path: |
             bin/*.exe
             bin/*.tar.gz
