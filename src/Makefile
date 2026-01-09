@@ -48,7 +48,7 @@ CXXFLAGS ?= -std=c++20 -Ofast -march=native -mtune=native -funroll-loops -flto=a
     -fassociative-math -fno-signed-zeros -fno-trapping-math -fno-stack-protector \
     -falign-functions=64 -fprefetch-loop-arrays -fstrict-aliasing -DNDEBUG -pipe \
     -Wall -Wextra -Wshadow
-LDFLAGS ?= -flto=auto -Wl,-O3 -Wl,--sort-common -Wl,--as-needed
+LDFLAGS ?=
 
 ### Default optimization / debug flags
 ifeq ($(DEBUG),yes)
