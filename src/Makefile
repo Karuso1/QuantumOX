@@ -43,12 +43,18 @@ OBJS = $(SRCS:.cpp=.o)
 
 ### Compiler defaults
 CXX ?= g++
-CXXFLAGS ?= -std=c++20 -Ofast -march=native -mtune=native -funroll-loops -flto=auto \
-    -fomit-frame-pointer -fno-math-errno -funsafe-math-optimizations -ffast-math \
-    -fassociative-math -fno-signed-zeros -fno-trapping-math -fno-stack-protector \
-    -falign-functions=64 -fprefetch-loop-arrays -fstrict-aliasing -DNDEBUG -pipe \
-    -Wall -Wextra -Wshadow
-LDFLAGS ?=
+CXXFLAGS ?= -std=c++17 -Ofast -march=native -mtune=native \
+    -funroll-loops -flto=auto -fomit-frame-pointer -fno-math-errno \
+    -funsafe-math-optimizations -ffast-math -fassociative-math \
+    -fno-signed-zeros -fno-trapping-math -fno-stack-protector \
+    -falign-functions=64 -fprefetch-loop-arrays -fstrict-aliasing \
+    -DNDEBUG -pipe -Wall -Wextra -Wshadow \
+    -floop-strip-mine -floop-block -fpeel-loops \
+    -fgraphite-identity -fipa-pta -fgcse-sm -fgcse-las -fgcse-after-reload \
+    -ftree-vectorize -fvect-cost-model=dynamic \
+    -finline-functions -finline-small-functions \
+    -fno-rtti
+LDFLAGS ?= -flto=auto -Wl,-O3 -Wl,--sort-common -Wl,--as-needed
 
 ### Default optimization / debug flags
 ifeq ($(DEBUG),yes)
@@ -208,7 +214,7 @@ clean: objclean
 	@rm -f .depend *~ core
 
 objclean:
-	@rm -f $(OBJS) $(EXE)
+	@rm -f $(OBJS)
 
 ### ==========================================================================
 ### Section 7. Dependency generation
