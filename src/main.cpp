@@ -522,7 +522,7 @@ int main() {
             #if defined(_WIN32) || defined(_WIN64)
                 system("cls");
             #else
-                system("clear");
+                (void)system("clear");
             #endif
             } else if (cmd == "help") {
                 if (tokens.size() == 1) {
