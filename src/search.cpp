@@ -284,7 +284,7 @@ namespace QuantumOX {
         // ensure unmake
         int val = 0;
         try {
-            val = board.evaluate(for_player);
+            val = board.evaluate(for_player[0]);
         } catch (...) {
             val = 0;
         }
@@ -347,6 +347,16 @@ namespace QuantumOX {
                 if (board.is_win(prev)) score += 1e6;
                 board.unmake_move(mv);
             } catch(...) {}
+            // positional heuristic for square grids
+            if (board.get_dims().size() == 2 && board.get_dims()[0] == board.get_dims()[1]) {
+                int N = board.get_dims()[0];
+                int pos = mv - 1; // 0-based
+                int r = pos / N;
+                int c = pos % N;
+                if (r == N/2 && c == N/2) score += 100.0;
+                else if ((r==0 || r==N-1) && (c==0 || c==N-1)) score += 50.0;
+                else if (r==0 || r==N-1 || c==0 || c==N-1) score += 10.0;
+            }
             // small bias to stabilize order
             score += -static_cast<double>(mv) * 0.01;
             mk.push_back({mv, score, i});
@@ -384,6 +394,16 @@ namespace QuantumOX {
                 if (board.is_win(prev)) score += 1e6;
                 board.unmake_move(mv);
             } catch(...) {}
+            // positional heuristic for square grids
+            if (board.get_dims().size() == 2 && board.get_dims()[0] == board.get_dims()[1]) {
+                int N = board.get_dims()[0];
+                int pos = mv - 1; // 0-based
+                int r = pos / N;
+                int c = pos % N;
+                if (r == N/2 && c == N/2) score += 100.0;
+                else if ((r==0 || r==N-1) && (c==0 || c==N-1)) score += 50.0;
+                else if (r==0 || r==N-1 || c==0 || c==N-1) score += 10.0;
+            }
             score += -static_cast<double>(mv) * 0.01;
             mk.push_back({mv, score, i});
         }
@@ -796,6 +816,10 @@ namespace QuantumOX {
                 info_token("nps"); info_token(std::to_string(ir.nps));
                 info_token("hashfull"); info_token(std::to_string(hashfull_permille));
                 info_token("time"); info_token(std::to_string(elapsed_ms()));
+                info_token("minimaxpv");
+                for (int mv : min_pv) info_token(std::to_string(mv));
+                info_token("negamaxpv");
+                for (int mv : neg_pv) info_token(std::to_string(mv));
                 info_token("pv");
                 for (int mv : best_pv) info_token(std::to_string(mv));
 
@@ -879,8 +903,12 @@ namespace QuantumOX {
                 info_token("nps"); info_token(std::to_string(ir.nps));
                 info_token("hashfull"); info_token(std::to_string(hashfull_permille));
                 info_token("time"); info_token(std::to_string(elapsed_ms()));
+                info_token("minimaxpv");
+                for (int mv : min_pv) info_token(std::to_string(mv));
+                info_token("negamaxpv");
+                for (int mv : neg_pv) info_token(std::to_string(mv));
                 info_token("pv");
-                for (int mv : chosen_pv) info_token(std::to_string(mv));
+                for (int mv : best_pv) info_token(std::to_string(mv));
                 std::cout << std::endl;
                 // ----- HYBRID MODE LOGIC END -----
             }
@@ -1424,11 +1452,11 @@ namespace QuantumOX {
 
     int Searcher::evaluate_terminal_or_heuristic(Board& board) {
         std::string stm = board.get_side_to_move();
-        try { return board.evaluate(stm); } catch(...) { return evaluate_terminal(board); }
+        try { return board.evaluate(stm[0]); } catch(...) { return evaluate_terminal(board); }
     }
 
     int Searcher::evaluate_for_root(Board& board, const std::string& root_player) {
-        try { return board.evaluate(root_player); } catch(...) {
+        try { return board.evaluate(root_player[0]); } catch(...) {
             if (board.is_win(root_player)) return SCORE_WIN;
             std::string opp = (root_player == std::string(1, SYMBOL_X)) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
             if (board.is_win(opp)) return SCORE_LOSS;
