@@ -44,7 +44,8 @@ namespace QuantumOX {
         bool is_draw() const;
     
         // ------------------ evaluation ----------------------------------------
-        int evaluate(const std::string& player) const;
+        int evaluate(char player) const;
+        std::vector<int> get_dims() const { return dims; }
     
         // ------------------ zobrist hashing -----------------------------------
         void init_zobrist(uint64_t seed = 0);
@@ -60,16 +61,30 @@ namespace QuantumOX {
     
     private:
         std::string grid_spec;
-        std::vector<std::string> cells;
+        std::vector<char> cells;
         std::vector<int> dims;
         std::string side_to_move;
         std::vector<int> move_stack;
         std::optional<std::vector<std::vector<uint64_t>>> zobrist_table;
         std::vector<std::vector<int>> win_lines;
     
+        // Bitboard representation for fast operations
+        int board_size;
+        std::vector<uint64_t> bitboard_x;
+        std::vector<uint64_t> bitboard_o;
+        std::vector<uint64_t> occupied;
+        std::vector<std::vector<uint64_t>> row_masks;
+        std::vector<std::vector<uint64_t>> col_masks;
+        std::vector<uint64_t> diag1_mask;
+        std::vector<uint64_t> diag2_mask;
+    
         // ------------------ internal helpers ----------------------------------
         std::vector<std::vector<int>> generate_win_lines() const;
         int coords_to_index(const std::vector<int>& coords) const;
+        void update_bitboards(int move, const std::string& player);
+        bool check_win_bitboard(const std::vector<uint64_t>& bb) const;
+        int bit_position(int move) const;
+        int move_from_bit(int bit) const;
     };
 
 } // namespace QuantumOX
