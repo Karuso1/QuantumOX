@@ -1,3 +1,4 @@
+
 /* 
  * QuantumOX, a Tic Tac Toe engine supporting UTTTI.
  * Copyright (C) 2025 Kartik Pawar
@@ -99,6 +100,27 @@ namespace QuantumOX {
         }
         return std::to_string(n);
     }
+
+    // Validate Hash: must be integer between 1 and 2097152
+    std::string validate_hash(const std::string& v) {
+        int n = 0;
+        try {
+            size_t idx = 0;
+            n = std::stoi(v, &idx);
+            if (idx != v.size()) {
+                throw std::invalid_argument("extra characters");
+            }
+        } catch (const std::exception&) {
+            throw std::runtime_error("Hash expects an integer value");
+        }
+
+        if (n < 1 || n > 2097152) {
+            std::ostringstream oss;
+            oss << "Hash must be between 1 and 2097152 (requested " << n << ")";
+            throw std::runtime_error(oss.str());
+        }
+        return std::to_string(n);
+    }
     
     // --- default registry -------------------------------------------------------
     std::unordered_map<std::string, Option> _registry = {
@@ -108,6 +130,9 @@ namespace QuantumOX {
         {"FirstPlayer", Option("FirstPlayer", "combo", std::string(1, SYMBOL_X),
                            "Symbol for the player who moves first: 'X' or 'O'.",
                            validate_firstplayer)},
+        {"Hash", Option("Hash", "spin", std::to_string(DEFAULT_HASH),
+                        "Number of hash used to store positions (1-2097152).",
+                        validate_hash)},
         {"Threads", Option("Threads", "spin", std::to_string(DEFAULT_THREADS),
                            "Number of worker threads used for search (1-512).",
                            validate_threads)}
@@ -156,6 +181,14 @@ namespace QuantumOX {
                 meta["type"] = "combo";
                 meta["default"] = opt.default_value;
                 meta["var"] = "var X var O";
+            } else if (opt.name == "Hash") {
+                meta["type"] = "spin";
+                meta["default"] = opt.default_value;
+                meta["min"] = "1";
+                meta["max"] = "2097152";
+                std::ostringstream varss;
+                varss << "min 1 max 2097152";
+                meta["var"] = varss.str();
             } else if (opt.name == "Threads") {
                 meta["type"] = "spin";
                 meta["default"] = opt.default_value;
