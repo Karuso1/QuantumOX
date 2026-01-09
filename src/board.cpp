@@ -110,37 +110,75 @@ namespace QuantumOX {
 
         // cells
         int total = product(dims);
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        cells.assign(static_cast<size_t>(total), s_empty);
+        cells.assign(static_cast<size_t>(total), SYMBOL_EMPTY);
 
         // zobrist
         init_zobrist(0);
 
         // precompute win lines
         win_lines = generate_win_lines();
+
+        // initialize bitboards
+        board_size = product(dims);
+        int num_words = (board_size + 63) / 64;
+        bitboard_x.assign(static_cast<size_t>(num_words), 0ULL);
+        bitboard_o.assign(static_cast<size_t>(num_words), 0ULL);
+        occupied.assign(static_cast<size_t>(num_words), 0ULL);
+
+        // precompute masks for 2D square grids
+        if (dims.size() == 2 && dims[0] == dims[1]) {
+            int N = dims[0];
+            row_masks.assign(static_cast<size_t>(N), std::vector<uint64_t>(static_cast<size_t>(num_words), 0ULL));
+            col_masks.assign(static_cast<size_t>(N), std::vector<uint64_t>(static_cast<size_t>(num_words), 0ULL));
+            diag1_mask.assign(static_cast<size_t>(num_words), 0ULL);
+            diag2_mask.assign(static_cast<size_t>(num_words), 0ULL);
+            for (int r = 0; r < N; ++r) {
+                for (int c = 0; c < N; ++c) {
+                    int pos = r * N + c;
+                    int word = pos / 64;
+                    uint64_t bit = 1ULL << (pos % 64);
+                    row_masks[static_cast<size_t>(r)][static_cast<size_t>(word)] |= bit;
+                    col_masks[static_cast<size_t>(c)][static_cast<size_t>(word)] |= bit;
+                    if (r == c) diag1_mask[static_cast<size_t>(word)] |= bit;
+                    if (r + c == N - 1) diag2_mask[static_cast<size_t>(word)] |= bit;
+                }
+            }
+        }
     }
 
     // ------------------ move / state management --------------------------------
     std::vector<int> Board::legal_moves() const {
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        std::vector<int> moves;
-        moves.reserve(cells.size());
-        for (size_t i = 0; i < cells.size(); ++i) {
-            if (cells[i] == s_empty) moves.push_back(static_cast<int>(i) + 1);
+        if (dims.size() == 2 && dims[0] == dims[1]) {
+            std::vector<int> moves;
+            moves.reserve(static_cast<size_t>(board_size));
+            for (int pos = 0; pos < board_size; ++pos) {
+                int word = pos / 64;
+                uint64_t bit = 1ULL << (pos % 64);
+                if ((occupied[static_cast<size_t>(word)] & bit) == 0) moves.push_back(pos + 1);
+            }
+            return moves;
+        } else {
+            std::vector<int> moves;
+            moves.reserve(cells.size());
+            for (size_t i = 0; i < cells.size(); ++i) {
+                if (cells[i] == SYMBOL_EMPTY) moves.push_back(static_cast<int>(i) + 1);
+            }
+            return moves;
         }
-        return moves;
     }
 
     void Board::make_move(int move) {
         if (move < 1) throw std::runtime_error("Move index must be >= 1");
         size_t idx = static_cast<size_t>(move - 1);
         if (idx >= cells.size()) throw std::runtime_error("Move " + std::to_string(move) + " out of range for board");
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        if (cells[idx] != s_empty) throw std::runtime_error("Cell " + std::to_string(move) + " is not empty");
+        if (cells[idx] != SYMBOL_EMPTY) throw std::runtime_error("Cell " + std::to_string(move) + " is not empty");
 
         // place
-        cells[idx] = side_to_move;
+        cells[idx] = side_to_move[0];
         move_stack.push_back(move);
+
+        // update bitboards
+        update_bitboards(move, side_to_move);
 
         // flip side
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
@@ -157,8 +195,10 @@ namespace QuantumOX {
         }
         size_t idx = static_cast<size_t>(move - 1);
         if (idx >= cells.size()) throw std::runtime_error("Move " + std::to_string(move) + " out of range for board");
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        cells[idx] = s_empty;
+        cells[idx] = SYMBOL_EMPTY;
+
+        // update bitboards (clear)
+        update_bitboards(move, "");
 
         // flip side back
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
@@ -168,42 +208,52 @@ namespace QuantumOX {
 
     // ------------------ game status --------------------------------------------
     bool Board::is_win(const std::string& player) const {
-        for (const auto & line : win_lines) {
-            bool all_match = true;
-            for (int idx1 : line) {
-                size_t pos = static_cast<size_t>(idx1 - 1);
-                if (pos >= cells.size() || cells[pos] != player) {
-                    all_match = false;
-                    break;
+        if (dims.size() == 2 && dims[0] == dims[1]) {
+            const auto& bb = (player == symbol_to_string_auto(SYMBOL_X)) ? bitboard_x : bitboard_o;
+            return check_win_bitboard(bb);
+        } else {
+            for (const auto & line : win_lines) {
+                bool all_match = true;
+                for (int idx1 : line) {
+                    size_t pos = static_cast<size_t>(idx1 - 1);
+                    if (pos >= cells.size() || cells[pos] != player[0]) {
+                        all_match = false;
+                        break;
+                    }
                 }
+                if (all_match) return true;
             }
-            if (all_match) return true;
+            return false;
         }
-        return false;
     }
 
     bool Board::is_draw() const {
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
         if (is_win(symbol_to_string_auto(SYMBOL_X)) || is_win(symbol_to_string_auto(SYMBOL_O)))
             return false;
-        return std::all_of(cells.begin(), cells.end(), [&](const std::string &c){ return c != s_empty; });
+        if (dims.size() == 2 && dims[0] == dims[1]) {
+            uint64_t full = ~0ULL;
+            for (size_t w = 0; w < occupied.size(); ++w) {
+                if (occupied[w] != full) return false;
+            }
+            return true;
+        } else {
+            return std::all_of(cells.begin(), cells.end(), [](char c){ return c == SYMBOL_EMPTY; });
+        }
     }
 
     // ------------------ evaluation ---------------------------------------------
-    int Board::evaluate(const std::string& player) const {
-        std::string s_x = symbol_to_string_auto(SYMBOL_X);
-        std::string s_o = symbol_to_string_auto(SYMBOL_O);
-        std::string opp = (player == s_x) ? s_o : s_x;
+    int Board::evaluate(char player) const {
+        char opp = (player == SYMBOL_X) ? SYMBOL_O : SYMBOL_X;
 
         int score = 0;
         for (const auto & line : win_lines) {
-            std::vector<std::string> marks;
+            std::vector<char> marks;
             marks.reserve(line.size());
             for (int idx1 : line) {
                 marks.push_back(cells[static_cast<size_t>(idx1 - 1)]);
             }
-            bool player_present = std::any_of(marks.begin(), marks.end(), [&](const std::string &m){ return m == player; });
-            bool opp_present = std::any_of(marks.begin(), marks.end(), [&](const std::string &m){ return m == opp; });
+            bool player_present = std::any_of(marks.begin(), marks.end(), [&](char m){ return m == player; });
+            bool opp_present = std::any_of(marks.begin(), marks.end(), [&](char m){ return m == opp; });
             if (player_present && opp_present) continue;
             if (!player_present && !opp_present) {
                 score += 1;
@@ -215,6 +265,22 @@ namespace QuantumOX {
                 score -= (cnt * cnt) * 10;
             }
         }
+
+        // Add center bonus for 2D square grids
+        if (dims.size() == 2 && dims[0] == dims[1]) {
+            int N = dims[0];
+            int center = N / 2;
+            int center_pos = center * N + center;
+            if (cells[static_cast<size_t>(center_pos)] == player) score += 50;
+            else if (cells[static_cast<size_t>(center_pos)] == opp) score -= 50;
+            // Add corner bonus
+            std::vector<int> corners = {0, N-1, (N-1)*N, N*N-1};
+            for (int c : corners) {
+                if (cells[static_cast<size_t>(c)] == player) score += 20;
+                else if (cells[static_cast<size_t>(c)] == opp) score -= 20;
+            }
+        }
+
         return score;
     }
 
@@ -239,13 +305,13 @@ namespace QuantumOX {
         std::string s_x = symbol_to_string_auto(SYMBOL_X);
         std::string s_o = symbol_to_string_auto(SYMBOL_O);
         for (size_t i = 0; i < cells.size(); ++i) {
-            if (cells[i] == s_x) {
+            if (cells[i] == SYMBOL_X) {
                 h ^= (*zobrist_table)[i][0];
-            } else if (cells[i] == s_o) {
+            } else if (cells[i] == SYMBOL_O) {
                 h ^= (*zobrist_table)[i][1];
             }
         }
-        if (side_to_move == s_o) {
+        if (side_to_move == symbol_to_string_auto(SYMBOL_O)) {
             h ^= 0xF00DF00DCAFEBABEULL;
         }
         return h;
@@ -358,8 +424,10 @@ namespace QuantumOX {
     }
 
     void Board::reset() {
-        std::string s_empty = symbol_to_string_auto(SYMBOL_EMPTY);
-        cells.assign(cells.size(), s_empty);
+        cells.assign(cells.size(), SYMBOL_EMPTY);
+        bitboard_x.assign(bitboard_x.size(), 0ULL);
+        bitboard_o.assign(bitboard_o.size(), 0ULL);
+        occupied.assign(occupied.size(), 0ULL);
         move_stack.clear();
         side_to_move = symbol_to_string_auto(SYMBOL_X);
     }
@@ -472,7 +540,7 @@ namespace QuantumOX {
         std::string s_o = symbol_to_string_auto(SYMBOL_O);
 
         // reset board
-        cells.assign(cells.size(), s_empty);
+        cells.assign(cells.size(), SYMBOL_EMPTY);
         move_stack.clear();
 
         int count_x = 0;
@@ -482,7 +550,7 @@ namespace QuantumOX {
             std::vector<std::string> syms;
             parse_row_to_symbols(tttn_str, dims[0], syms);
             for (int i = 0; i < dims[0]; ++i) {
-                cells[static_cast<size_t>(i)] = syms[static_cast<size_t>(i)];
+                cells[static_cast<size_t>(i)] = syms[static_cast<size_t>(i)][0];
                 if (syms[static_cast<size_t>(i)] == s_x) ++count_x;
                 else if (syms[static_cast<size_t>(i)] == s_o) ++count_o;
             }
@@ -504,7 +572,7 @@ namespace QuantumOX {
                 parse_row_to_symbols(rows[static_cast<size_t>(r)], colsN, syms);
                 for (int c = 0; c < colsN; ++c) {
                     int idx = (r * colsN + c);
-                    cells[static_cast<size_t>(idx)] = syms[static_cast<size_t>(c)];
+                    cells[static_cast<size_t>(idx)] = syms[static_cast<size_t>(c)][0];
                     if (syms[static_cast<size_t>(c)] == s_x) ++count_x;
                     else if (syms[static_cast<size_t>(c)] == s_o) ++count_o;
                 }
@@ -544,7 +612,7 @@ namespace QuantumOX {
                         std::vector<int> coords = { l, r, c };
                         int one_based_idx = coords_to_index(coords);
                         int zero_idx = one_based_idx - 1;
-                        cells[static_cast<size_t>(zero_idx)] = syms[static_cast<size_t>(c)];
+                        cells[static_cast<size_t>(zero_idx)] = syms[static_cast<size_t>(c)][0];
                         if (syms[static_cast<size_t>(c)] == s_x) ++count_x;
                         else if (syms[static_cast<size_t>(c)] == s_o) ++count_o;
                     }
@@ -552,6 +620,22 @@ namespace QuantumOX {
             }
         } else {
             throw std::runtime_error("TTTN loader not implemented for dims > 3");
+        }
+
+        // update bitboards
+        bitboard_x.assign(bitboard_x.size(), 0ULL);
+        bitboard_o.assign(bitboard_o.size(), 0ULL);
+        for (int i = 0; i < board_size; ++i) {
+            if (cells[static_cast<size_t>(i)] == SYMBOL_X) {
+                int word = i / 64;
+                bitboard_x[static_cast<size_t>(word)] |= (1ULL << (i % 64));
+            } else if (cells[static_cast<size_t>(i)] == SYMBOL_O) {
+                int word = i / 64;
+                bitboard_o[static_cast<size_t>(word)] |= (1ULL << (i % 64));
+            }
+        }
+        for (size_t w = 0; w < occupied.size(); ++w) {
+            occupied[w] = bitboard_x[w] | bitboard_o[w];
         }
 
         // infer side to move: X starts first
@@ -568,6 +652,51 @@ namespace QuantumOX {
         // regenerate derived data
         win_lines = generate_win_lines();
         init_zobrist(0); // re-init (deterministic seed 0); change seed behavior if desired
+    }
+
+    void Board::update_bitboards(int move, const std::string& player) {
+        int pos = move - 1;
+        int word = pos / 64;
+        uint64_t bit = 1ULL << (pos % 64);
+        if (player == symbol_to_string_auto(SYMBOL_X)) {
+            bitboard_x[static_cast<size_t>(word)] |= bit;
+        } else if (player == symbol_to_string_auto(SYMBOL_O)) {
+            bitboard_o[static_cast<size_t>(word)] |= bit;
+        } else {
+            // clear
+            bitboard_x[static_cast<size_t>(word)] &= ~bit;
+            bitboard_o[static_cast<size_t>(word)] &= ~bit;
+        }
+        occupied[static_cast<size_t>(word)] = bitboard_x[static_cast<size_t>(word)] | bitboard_o[static_cast<size_t>(word)];
+    }
+
+    bool Board::check_win_bitboard(const std::vector<uint64_t>& bb) const {
+        if (dims.size() != 2 || dims[0] != dims[1]) return false;
+        int N = dims[0];
+        for (int i = 0; i < N; ++i) {
+            bool row_win = true;
+            bool col_win = true;
+            for (size_t w = 0; w < row_masks[static_cast<size_t>(i)].size(); ++w) {
+                if ((bb[w] & row_masks[static_cast<size_t>(i)][w]) != row_masks[static_cast<size_t>(i)][w]) row_win = false;
+                if ((bb[w] & col_masks[static_cast<size_t>(i)][w]) != col_masks[static_cast<size_t>(i)][w]) col_win = false;
+            }
+            if (row_win || col_win) return true;
+        }
+        bool d1_win = true;
+        bool d2_win = true;
+        for (size_t w = 0; w < diag1_mask.size(); ++w) {
+            if ((bb[w] & diag1_mask[w]) != diag1_mask[w]) d1_win = false;
+            if ((bb[w] & diag2_mask[w]) != diag2_mask[w]) d2_win = false;
+        }
+        return d1_win || d2_win;
+    }
+
+    int Board::bit_position(int move) const {
+        return move - 1;
+    }
+
+    int Board::move_from_bit(int bit) const {
+        return bit + 1;
     }
 
 } // namespace QuantumOX
