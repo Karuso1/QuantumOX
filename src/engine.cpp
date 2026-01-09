@@ -87,7 +87,10 @@ std::string QuantumOXEngine::play_move(int move) {
 GoResult QuantumOXEngine::go(std::optional<int> depth,
                              std::optional<int> time_ms,
                              std::optional<int> nodes) {
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
     Searcher::SearchResult res = searcher.search(board, depth, time_ms, nodes);
+    #pragma GCC diagnostic pop
 
     GoResult out;
     out.raw = res;
