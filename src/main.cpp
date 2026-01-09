@@ -429,7 +429,10 @@ void handle_go(QuantumOXEngine& engine, const std::vector<std::string>& tokens) 
         return;
     }
 
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
     auto res = engine.go(depth, movetime, nodes_limit);
+    #pragma GCC diagnostic pop
     for (const auto& line : res.info_lines) {
         std::cout << line << "\n";
         std::cout.flush();
