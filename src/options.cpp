@@ -1,7 +1,7 @@
 
 /* 
  * QuantumOX, a Tic Tac Toe engine supporting UTTTI.
- * Copyright (C) 2025 Kartik Pawar
+ * Copyright (C) 2025-2026 Kartik Pawar
  *
  * QuantumOX is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
