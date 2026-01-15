@@ -21,24 +21,29 @@
 #include "options.h" // used to read "Threads" option dynamically
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <numeric> // for accumulate
+#include <optional>
+#include <queue>
+#include <shared_mutex> // for shared mutex
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <thread>
-#include <future>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include <memory>
-#include <shared_mutex> // for shared mutex
-#include <cmath>
-#include <numeric> // for accumulate
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 using namespace std::chrono;
 
@@ -317,99 +322,625 @@ namespace QuantumOX {
         if (abort_flag) abort_flag->store(true);
     }
 
+    // small helper for order_moves_for_negamax
+    static inline double safe_log(double x) {
+        return x <= 0.0 ? 0.0 : std::log1p(x);
+    }
+
     // ---------- Utility: order moves with advanced heuristics ---------------
     // returns vector of moves sorted (best first) but DOES NOT modify board.
     std::vector<int> order_moves_for_negamax(Searcher* s, Board& board, std::vector<int> moves, uint64_t k, int depth) {
-        struct MoveKey { int mv; double key; size_t orig; };
-        std::vector<MoveKey> mk;
-        mk.reserve(moves.size());
+        struct MoveKey {
+            int mv;
+            double key;
+            size_t orig;
+            int reasons[10];
+        };
 
-        // read TT move and killer/history
+        // Trivial cases
+        if (moves.size() <= 1) return moves;
+
+        std::vector<MoveKey> mk; mk.reserve(moves.size());
+
+        // ------------------ Configurable thresholds & weights ------------------
+        const size_t BF = moves.size();
+        const bool very_wide = (BF > 120);    // skip almost all probes
+        const bool shallow = (depth <= 3);    // allow more tactical checks in shallow nodes
+        const size_t probe_limit = 64;        // only probe when BF <= this
+        const size_t mobility_limit = 128;
+
+        // Weight buckets (larger is more important)
+        const double W_TT = 1e8;           // transposition-table exact move
+        const double W_PV = 6e7;           // principal-variation / searcher-selected PV
+        const double W_IMMEDIATE = 5e7;    // immediate win
+        const double W_THREAT = 2e5;       // threat creation (fork / double-threat)
+        const double W_BLOCK = 9e4;        // move blocks opponent immediate threat
+        const double W_KILLER = 5e4;       // killer move boost
+        const double W_HISTORY = 8.0;      // history heuristic scaled
+        const double W_MOBILITY = 1.5;     // mobility (availability of responses)
+        const double W_STABILITY = 3e4;    // stable moves (don't create opponent fork)
+        const double W_SYMMETRY = 120.0;   // prefer symmetric/paired moves when relevant
+        const double W_CENTER = 160.0;     // square center bias
+        const double W_CORNER = 90.0;      // corner bias
+        const double W_EDGE = 18.0;        // edge bias
+        const double tiny_tiebreak = 1.0 / 1e7;
+
+        // ------------------ read TT + PV-ish information -----------------------
+        // Try plain TT keyed by k (this function expects plain-keyed lookup)
         std::optional<int> tt_move = std::nullopt;
-        {
-            TTEntry e;
-            if (shared_tt_plain_get(k, e)) tt_move = e.best_move;
+        auto ittt = s->tt_plain.find(k);
+        if (ittt != s->tt_plain.end()) {
+            if (ittt->second.best_move) tt_move = ittt->second.best_move;
         }
+
+        // Try to get a candidate PV from Searcher::build_pv (cheap-ish, but only use if short)
+        std::vector<int> engine_pv;
+        try {
+            // build_pv is public; it's cheap relative to expensive probes
+            engine_pv = s->build_pv_for_root(board, board.get_side_to_move());
+        } catch(...) {
+            engine_pv.clear();
+        }
+        std::optional<int> pv_first = std::nullopt;
+        if (!engine_pv.empty()) pv_first = engine_pv.front();
+
+        // -------------- per-call cache to avoid redoing probes -----------------
+        std::unordered_map<uint64_t, double> probe_cache; probe_cache.reserve(std::min<size_t>(BF, 128));
+
+        // Helper: positional bias (square grids)
+        auto pos_bias = [&](const Board& b, int mv) -> double {
+            auto dims = b.get_dims();
+            if (dims.size() != 2) return 0.0;
+            int N = dims[0];
+            if (N <= 0 || dims[1] != N) return 0.0;
+            int pos = mv - 1;
+            int r = pos / N, c = pos % N;
+            if (N % 2 == 1 && r == N/2 && c == N/2) return W_CENTER;
+            if ((r==0 || r==N-1) && (c==0 || c==N-1)) return W_CORNER;
+            if (r==0 || r==N-1 || c==0 || c==N-1) return W_EDGE;
+            return 0.0;
+        };
+
+        // Helper: small mobility metric (how many replies available after move)
+        auto mobility_score = [&](Board& b, int mv)->double {
+            if (BF > mobility_limit) return 0.0; // skip in extreme wide nodes
+            try {
+                std::string before = b.get_side_to_move();
+                b.make_move(mv);
+                size_t replies = b.legal_moves().size();
+                b.unmake_move(mv);
+                // more replies for opponent -> dangerous (we penalize), fewer replies -> good (we reward)
+                // invert replies with smooth transform
+                double inv = 1.0 / (1.0 + static_cast<double>(replies));
+                return W_MOBILITY * inv * 100.0;
+            } catch(...) {
+                return 0.0;
+            }
+        };
+
+        // Helper: cheap fork/threat detector using one-move lookahead (only when not wide)
+        // returns (immediate_win, creates_threat_count, blocks_opponent_win)
+        auto cheap_tactical = [&](Board& b, int mv)->std::tuple<bool,int,bool> {
+            uint64_t ck = (static_cast<uint64_t>(k) << 32) ^ static_cast<uint64_t>(mv & 0xffffffff);
+            auto itc = probe_cache.find(ck);
+            if (itc != probe_cache.end()) {
+                double v = itc->second;
+                bool win = (std::floor(v / 1e9) > 0.0);
+                int threats = static_cast<int>(std::fmod(std::floor(v / 1e5), 1e4));
+                bool block = (std::fmod(v, 1e5) >= 1.0);
+                return {win, threats, block};
+            }
+        
+            bool immediate = false;
+            int threats = 0;
+            bool blocks = false;
+            try {
+                std::string before = b.get_side_to_move();
+                b.make_move(mv);
+            
+                // immediate win?
+                if (b.is_win(before)) {
+                    immediate = true;
+                    // encode and cache
+                    probe_cache[ck] = 1e9 + 0.0;
+                    b.unmake_move(mv);
+                    return {true,0,false};
+                }
+            
+                // count moves that would be immediate wins for the mover on the following ply (fork-like)
+                auto next = b.legal_moves();
+                size_t cap = (next.size() > 64) ? 64 : next.size();
+                for (size_t i = 0; i < cap; ++i) {
+                    int nm = next[i];
+                    try {
+                        b.make_move(nm);
+                        if (b.is_win(before)) threats++;
+                        b.unmake_move(nm);
+                        if (threats >= 2) break; // fork detection
+                    } catch(...) { }
+                }
+            
+                // block: check if opponent had an immediate winning reply in the root position that is now removed
+                bool opponent_had_immediate = false;
+                // cheap scan on root position (only if small)
+                if (BF <= probe_limit) {
+                    auto root_moves = board.legal_moves(); // original root board
+                    for (int rm : root_moves) {
+                        try {
+                            board.make_move(rm);
+                            std::string opp = board.get_side_to_move();
+                            if (board.is_win(opp == std::string(1, 'X') ? std::string(1, 'O') : std::string(1, 'X'))) {
+                                opponent_had_immediate = true;
+                                board.unmake_move(rm);
+                                break;
+                            }
+                            board.unmake_move(rm);
+                        } catch(...) {}
+                    }
+                }
+                // Now see if the new board removed that immediate (cheap approx)
+                if (opponent_had_immediate) {
+                    // check if any opponent wins exist now
+                    bool opponent_win_now = false;
+                    for (int nm : b.legal_moves()) {
+                        try {
+                            b.make_move(nm);
+                            std::string opp = b.get_side_to_move();
+                            if (b.is_win(opp == std::string(1, 'X') ? std::string(1, 'O') : std::string(1, 'X'))) {
+                                opponent_win_now = true;
+                                b.unmake_move(nm);
+                                break;
+                            }
+                            b.unmake_move(nm);
+                        } catch(...) {}
+                    }
+                    if (!opponent_win_now) blocks = true;
+                }
+            
+                // encode: 1e9 block for immediate, add threats*1e5, set last digits as block flag
+                double enc = 0.0;
+                if (immediate) enc += 1e9;
+                enc += static_cast<double>(threats) * 1e5;
+                if (blocks) enc += 1.0;
+                probe_cache[ck] = enc;
+                b.unmake_move(mv);
+            } catch(...) {
+                // best-effort, keep defaults
+            }
+            return {immediate, threats, blocks};
+        };
+
+        // ------------------ main evaluation loop --------------------
         for (size_t i = 0; i < moves.size(); ++i) {
             int mv = moves[i];
-            double score = 0.0;
-            if (tt_move && *tt_move == mv) score += 1e8;
+            MoveKey M; M.mv = mv; M.orig = i; M.key = 0.0;
+            for (int r=0;r<10;++r) M.reasons[r] = 0;
+        
+            // 1) TT boost (plain)
+            if (tt_move && *tt_move == mv) {
+                M.key += W_TT;
+                M.reasons[0] = 90000000;
+            }
+        
+            // 2) PV / engine-suggested first move (highly prioritized, different weight from TT)
+            if (pv_first && *pv_first == mv) {
+                M.key += W_PV;
+                M.reasons[1] = 60000000;
+            }
+        
+            // 3) killer moves
             auto itkm = s->killer_moves.find(depth);
             if (itkm != s->killer_moves.end()) {
-                for (int km : itkm->second) if (km == mv) score += 5000.0;
+                auto &klist = itkm->second;
+                if (!klist.empty() && klist[0] == mv) { M.key += W_KILLER; M.reasons[2] = 50000; }
+                else if (klist.size() > 1 && klist[1] == mv) { M.key += (W_KILLER * 0.6); M.reasons[2] = 30000; }
             }
+        
+            // 4) history heuristic (logarithmic scaling)
             auto ith = s->history.find(mv);
-            if (ith != s->history.end()) score += static_cast<double>(ith->second);
-            // quick heuristic: immediate winning move is huge priority
-            try {
-                board.make_move(mv);
-                std::string prev = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
-                if (board.is_win(prev)) score += 1e6;
-                board.unmake_move(mv);
-            } catch(...) {}
-            // positional heuristic for square grids
-            if (board.get_dims().size() == 2 && board.get_dims()[0] == board.get_dims()[1]) {
-                int N = board.get_dims()[0];
-                int pos = mv - 1; // 0-based
-                int r = pos / N;
-                int c = pos % N;
-                if (r == N/2 && c == N/2) score += 100.0;
-                else if ((r==0 || r==N-1) && (c==0 || c==N-1)) score += 50.0;
-                else if (r==0 || r==N-1 || c==0 || c==N-1) score += 10.0;
+            if (ith != s->history.end()) {
+                double h = static_cast<double>(ith->second);
+                double hist_score = W_HISTORY * safe_log(std::abs(h) + 1.0);
+                if (h < 0) hist_score = -hist_score;
+                M.key += hist_score;
+                M.reasons[3] = static_cast<int>(hist_score);
             }
-            // small bias to stabilize order
-            score += -static_cast<double>(mv) * 0.01;
-            mk.push_back({mv, score, i});
+        
+            // 5) positional bias (center/corner/edge)
+            double pb = pos_bias(board, mv);
+            M.key += pb;
+            M.reasons[4] = static_cast<int>(pb);
+        
+            // 6) mobility / replies scoring (prefer moves that reduce opponent mobility)
+            double mob = mobility_score(board, mv);
+            M.key += mob;
+            M.reasons[5] = static_cast<int>(mob);
+        
+            // 7) symmetry/pairing bias: if grid even and move has a symmetric counterpart not played, favor it
+            // (helps keep balanced play and reduces branching near symmetric positions)
+            auto dims = board.get_dims();
+            if (dims.size() == 2 && dims[0] == dims[1] && dims[0] >= 2) {
+                int N = dims[0];
+                int pos = mv - 1, r = pos / N, c = pos % N;
+                int sr = N - 1 - r, sc = N - 1 - c;
+                int sym_pos = sr * N + sc + 1; // 1-based
+                if (sym_pos != mv) {
+                    // if symmetric square is still legal, give small boost
+                    auto legal = board.legal_moves();
+                    if (std::find(legal.begin(), legal.end(), sym_pos) != legal.end()) {
+                        M.key += W_SYMMETRY;
+                        M.reasons[6] = 1;
+                    }
+                }
+            }
+        
+            // 8) cheap tactical probe (immediate win, threats, block) - gated by width/depth
+            if (!very_wide && (shallow || BF <= probe_limit)) {
+                bool immediate=false; int threats=0; bool blocks=false;
+                std::tie(immediate, threats, blocks) = cheap_tactical(board, mv);
+                if (immediate) {
+                    M.key += W_IMMEDIATE;
+                    M.reasons[7] = 10000000;
+                }
+                if (threats >= 1) {
+                    M.key += static_cast<double>(threats) * W_THREAT;
+                    M.reasons[8] = threats;
+                }
+                if (blocks) {
+                    M.key += W_BLOCK;
+                    M.reasons[9] = 1;
+                }
+            } else {
+                // in very wide nodes, do a super cheap replacement: check immediate win only (safe)
+                try {
+                    std::string before = board.get_side_to_move();
+                    board.make_move(mv);
+                    if (board.is_win(before)) {
+                        M.key += (W_IMMEDIATE * 0.8);
+                        M.reasons[7] = 8000000;
+                    }
+                    board.unmake_move(mv);
+                } catch(...) {}
+            }
+        
+            // 9) stability: penalize moves that create many opponent immediate threats
+            if (!very_wide && BF <= probe_limit) {
+                try {
+                    std::string before = board.get_side_to_move();
+                    board.make_move(mv);
+                    int opp_threats = 0;
+                    auto next = board.legal_moves();
+                    size_t cap = (next.size() > 64) ? 64 : next.size();
+                    for (size_t j=0;j<cap;++j) {
+                        int nm = next[j];
+                        try {
+                            board.make_move(nm);
+                            if (board.is_win(before == std::string(1, 'X') ? std::string(1, 'O') : std::string(1, 'X'))) {
+                                opp_threats++;
+                            }
+                            board.unmake_move(nm);
+                            if (opp_threats >= 2) break;
+                        } catch(...) {}
+                    }
+                    board.unmake_move(mv);
+                    if (opp_threats == 0) {
+                        M.key += W_STABILITY;
+                    } else {
+                        M.key -= static_cast<double>(opp_threats) * (W_STABILITY * 0.6);
+                    }
+                } catch(...) {}
+            }
+        
+            // 10) tiny deterministic bias for stability of sort ordering
+            M.key += -static_cast<double>(mv) * tiny_tiebreak;
+        
+            mk.push_back(M);
         }
-        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){ return a.key > b.key; });
+
+        // ------------------ Sort: highest key first, stable by original index -------------
+        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){
+            if (a.key == b.key) return a.orig < b.orig;
+            return a.key > b.key;
+        });
+
         std::vector<int> out; out.reserve(mk.size());
-        for (auto &m : mk) out.push_back(m.mv);
+        for (const auto &m : mk) out.push_back(m.mv);
         return out;
     }
 
-    std::vector<int> order_moves_for_minimax(Searcher* s, Board& board, std::vector<int> moves, uint64_t tk, int depth) {
-        struct MoveKey { int mv; double key; size_t orig; };
-        std::vector<MoveKey> mk;
-        mk.reserve(moves.size());
+    // small helpers for order_moves_for_minimax
+    static inline double clamp_double(double x, double lo, double hi) {
+        if (x < lo) return lo;
+        if (x > hi) return hi;
+        return x;
+    }
 
+    // scale an int to double
+    static inline double to_d(int x) { return static_cast<double>(x); }
+
+    std::vector<int> order_moves_for_minimax(Searcher* s, Board& board, std::vector<int> moves, uint64_t tk, int depth) {
+        struct MoveKey { int mv; double key; size_t orig; int components[8]; };
+
+        // Early out: trivial ordering when there is 0 or 1 move
+        if (moves.size() <= 1) return moves;
+
+        std::vector<MoveKey> mk; mk.reserve(moves.size());
+
+        // --------------- retrieve TT best-move (root keyed) if present --------------
         std::optional<int> tt_move = std::nullopt;
-        {
-            TTEntry e;
-            if (shared_tt_root_get(tk, e)) tt_move = e.best_move;
+        // prefer root-keyed table (more accurate for ordering at root)
+        auto itroot = s->tt_root.find(tk);
+        if (itroot != s->tt_root.end()) {
+            if (itroot->second.best_move) tt_move = itroot->second.best_move;
+        } else {
+            // fallback: plain-keyed TT lookup using board key (mix with tk)
+            uint64_t bkey = s->key(board);
+            auto itplain = s->tt_plain.find(bkey);
+            if (itplain != s->tt_plain.end()) {
+                if (itplain->second.best_move) tt_move = itplain->second.best_move;
+            }
         }
 
+        // -------------- small bookkeeping and thresholds ----------------
+        const size_t BF = moves.size();
+        // If branching is large, skip expensive per-move probes
+        const bool wide_node = (BF > 60); // tunable threshold
+        // If depth is shallow, prioritize tactical checks (mates/forks)
+        const bool shallow_node = (depth <= 3);
+        // cap for performing tactical probes to avoid blowups
+        const size_t tactical_probe_limit = 48; // only probe when BF <= this
+
+        // per-call cache to avoid repeating Searcher evaluations
+        // key: (tk << 32) ^ mv  => careful mixing where shifts safe
+        std::unordered_map<uint64_t, double> eval_cache; eval_cache.reserve(std::min<size_t>(BF, 128));
+
+        // string representing side to move before any make_move
+        std::string root_player = board.get_side_to_move();
+
+        // small penalty for larger move numbers to keep deterministic tiebreak
+        const double base_tiebreak = 1.0 / 1e6;
+
+        // access killer moves and history references (cheap)
+        auto it_killer = s->killer_moves.find(depth);
+        const std::vector<int> empty_killers;
+        const std::vector<int>& killers = (it_killer != s->killer_moves.end()) ? it_killer->second : empty_killers;
+
+        // history score: move -> int
+        const auto& history = s->history;
+
+        // --------------- weight constants (tunable) ------------------
+        // Use large differences so categories don't bleed
+        const double W_TT = 1e9;
+        const double W_IMMEDIATE_WIN = 5e8;
+        const double W_KILLER_FIRST = 6e4;
+        const double W_KILLER_SECOND = 2e4;
+        const double W_HISTORY = 10.0;     // scaled by history value
+        const double W_EVAL = 2e3;         // scaled by evaluation magnitude
+        const double W_CENTER = 150.0;
+        const double W_CORNER = 75.0;
+        const double W_EDGE = 12.0;
+        const double W_FORK = 2e5;
+        const double W_BLOCK = 5e4;
+
+        // helper to detect center/corner/edge for square grids
+        auto positional_bias = [&](const Board& b, int mv)->double {
+            const auto dims = b.get_dims();
+            if (dims.size() != 2) return 0.0;
+            int N = dims[0];
+            if (N <= 0 || dims[1] != N) return 0.0; // only square
+            int pos = mv - 1; // moves are 1-based in the engine
+            int r = pos / N;
+            int c = pos % N;
+            // center
+            if (N % 2 == 1 && r == N/2 && c == N/2) return W_CENTER;
+            // corner
+            if ((r==0 || r==N-1) && (c==0 || c==N-1)) return W_CORNER;
+            // edge
+            if (r==0 || r==N-1 || c==0 || c==N-1) return W_EDGE;
+            return 0.0;
+        };
+
+        // helper: fast probe performing a small tactical check after make_move
+        // returns tuple: <is_immediate_win, is_fork_like, eval_score>
+        auto tactical_probe = [&](Board& b, int mv)->std::tuple<bool,bool,double> {
+            // key for cache
+            uint64_t ck = ((uint64_t)tk << 32) ^ static_cast<uint64_t>(mv & 0xffffffff);
+            auto itc = eval_cache.find(ck);
+            if (itc != eval_cache.end()) {
+                double v = itc->second;
+                bool win = (v >= 1e8);
+                bool fork = (v >= 1e5 && v < 1e8);
+                double eval = (v >= 1e5) ? (v - (int)1e5) : v; // encoding scheme if used
+                return {win, fork, eval};
+            }
+
+            bool immediate_win = false;
+            bool fork_like = false;
+            double eval_score = 0.0;
+
+            try {
+                // Save minimal info: root player string before move
+                std::string before = b.get_side_to_move();
+                b.make_move(mv);
+
+                // immediate win for the player who moved?
+                if (b.is_win(before)) {
+                    immediate_win = true;
+                    // cache with a large sentinel
+                    eval_cache[ck] = W_IMMEDIATE_WIN + 1.0; // encode as > W_IMMEDIATE_WIN
+                    b.unmake_move(mv);
+                    return {true,false,0.0};
+                }
+
+                // lightweight evaluation: call Searcher::evaluate_for_root if available
+                // It's an engine-provided heuristic evaluator: use it sparingly.
+                try {
+                    eval_score = static_cast<double>(s->evaluate_for_root(b, before));
+                } catch(...) {
+                    eval_score = 0.0;
+                }
+
+                // fork detection: count number of immediate winning moves available next turn for 'before'
+                size_t win_moves = 0;
+                if (b.legal_moves().size() <= 64) { // limit work
+                    auto next_moves = b.legal_moves();
+                    for (int nm : next_moves) {
+                        try {
+                            b.make_move(nm);
+                            if (b.is_win(before)) {
+                                ++win_moves;
+                            }
+                            b.unmake_move(nm);
+                            if (win_moves >= 2) break; // fork found
+                        } catch(...) {
+                            // ignore bad/unexpected
+                            if (win_moves >= 2) break;
+                        }
+                    }
+                }
+                if (win_moves >= 2) fork_like = true;
+
+                // encode results in cache: we compress into a double value for simplicity
+                double enc = eval_score;
+                if (immediate_win) enc += 1e8; // sentinel
+                else if (fork_like) enc += 1e5; // sentinel
+                eval_cache[ck] = enc;
+
+                b.unmake_move(mv);
+            } catch(...) {
+                // if any make/unmake failed, be conservative and set neutral values
+                immediate_win = false;
+                fork_like = false;
+                eval_score = 0.0;
+                // attempt to restore board if possible is omitted here
+            }
+
+            return {immediate_win, fork_like, eval_score};
+        };
+
+
+        // ------------------- main scoring loop ---------------------
         for (size_t i = 0; i < moves.size(); ++i) {
             int mv = moves[i];
-            double score = 0.0;
-            if (tt_move && *tt_move == mv) score += 1e8;
-            auto itkm = s->killer_moves.find(depth);
-            if (itkm != s->killer_moves.end()) {
-                for (int km : itkm->second) if (km == mv) score += 5000.0;
+            MoveKey m{}; m.mv = mv; m.orig = i;
+            m.key = 0.0;
+            for (int k=0;k<8;++k) m.components[k]=0;
+
+            // 1) TT move gets top score
+            if (tt_move && *tt_move == mv) {
+                m.key += W_TT;
+                m.components[0] = 1000000000;
             }
-            auto ith = s->history.find(mv);
-            if (ith != s->history.end()) score += static_cast<double>(ith->second);
-            try {
-                board.make_move(mv);
-                std::string prev = board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X);
-                if (board.is_win(prev)) score += 1e6;
-                board.unmake_move(mv);
-            } catch(...) {}
-            // positional heuristic for square grids
-            if (board.get_dims().size() == 2 && board.get_dims()[0] == board.get_dims()[1]) {
-                int N = board.get_dims()[0];
-                int pos = mv - 1; // 0-based
-                int r = pos / N;
-                int c = pos % N;
-                if (r == N/2 && c == N/2) score += 100.0;
-                else if ((r==0 || r==N-1) && (c==0 || c==N-1)) score += 50.0;
-                else if (r==0 || r==N-1 || c==0 || c==N-1) score += 10.0;
+
+            // 2) killer moves: 1st killer > 2nd killer > others
+            if (!killers.empty()) {
+                if (killers.size() > 0 && killers[0] == mv) { m.key += W_KILLER_FIRST; m.components[1] = 60000; }
+                else if (killers.size() > 1 && killers[1] == mv) { m.key += W_KILLER_SECOND; m.components[1] = 20000; }
             }
-            score += -static_cast<double>(mv) * 0.01;
-            mk.push_back({mv, score, i});
+
+            // 3) history heuristic
+            auto ith = history.find(mv);
+            if (ith != history.end()) {
+                // scale history logarithmically to avoid domination
+                double h = static_cast<double>(ith->second);
+                double hist_score = W_HISTORY * std::log1p(1.0 + std::abs(h));
+                if (h < 0) hist_score = -hist_score; // preserve sign
+                m.key += hist_score;
+                m.components[2] = static_cast<int>(hist_score);
+            }
+
+            // 4) positional cheap bias (center/corner/edge)
+            m.key += positional_bias(board, mv);
+            m.components[3] = static_cast<int>(positional_bias(board, mv));
+
+            // 5) tiny deterministic tiebreak to ensure consistent ordering
+            m.key += -static_cast<double>(mv) * base_tiebreak;
+
+            // 6) lightweight tactical probes are only run when the node is not very wide
+            if (!wide_node && (shallow_node || BF <= tactical_probe_limit)) {
+                bool immediate_win = false;
+                bool fork_like = false;
+                double eval_score = 0.0;
+                std::tie(immediate_win, fork_like, eval_score) = tactical_probe(board, mv);
+
+                if (immediate_win) {
+                    m.key += W_IMMEDIATE_WIN;
+                    m.components[4] = 100000000;
+                } else {
+                    if (fork_like) {
+                        m.key += W_FORK;
+                        m.components[5] = 200000;
+                    }
+                    // evaluation: positive means better for root_player
+                    // we add scaled eval; clamp to reduce dominance
+                    double scaled_eval = W_EVAL * clamp_double(eval_score / 1000.0, -50.0, 50.0);
+                    m.key += scaled_eval;
+                    m.components[6] = static_cast<int>(scaled_eval);
+                }
+            }
+
+            // 7) block detection: does this move prevent an opponent immediate win?
+            // We use a cheap probe: simulate opponent's best reply to see if there's an immediate win blocked
+            if (!wide_node && BF <= tactical_probe_limit) {
+                try {
+                    std::string before = board.get_side_to_move();
+                    bmake:
+                    board.make_move(mv);
+                    // Now check opponent:
+                    auto next = board.legal_moves();
+                    bool opponent_has_win = false;
+                    for (int nm : next) {
+                        board.make_move(nm);
+                        if (board.is_win(before == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X))) {
+                            opponent_has_win = true;
+                            board.unmake_move(nm);
+                            break;
+                        }
+                        board.unmake_move(nm);
+                    }
+                    board.unmake_move(mv);
+                    if (!opponent_has_win) {
+                        // if opponent previously had a direct win and this move removes it, award block
+                        // This is a heuristic and requires more engine knowledge to be exact; we approximate
+                        // by re-checking the root position: did opponent have an immediate win before mv?
+                        bool opponent_had_win_before = false;
+                        // Quick check: look at root legal moves and see if any gave opponent a win
+                        // (only do this if BF is not huge)
+                        if (BF <= tactical_probe_limit) {
+                            auto root_moves = board.legal_moves();
+                            for (int rm : root_moves) {
+                                board.make_move(rm);
+                                if (board.is_win(board.get_side_to_move() == std::string(1, SYMBOL_X) ? std::string(1, SYMBOL_O) : std::string(1, SYMBOL_X))) {
+                                    opponent_had_win_before = true;
+                                    board.unmake_move(rm);
+                                    break;
+                                }
+                                board.unmake_move(rm);
+                            }
+                        }
+                        if (opponent_had_win_before) {
+                            m.key += W_BLOCK;
+                            m.components[7] = 50000;
+                        }
+                    }
+                } catch(...) {
+                    // If anything goes wrong just skip block detection
+                }
+            }
+
+            mk.push_back(m);
         }
-        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){ return a.key > b.key; });
+
+        // ---------------- final sort: by key desc, stable with orig index as tiebreaker ----------------
+        std::sort(mk.begin(), mk.end(), [](const MoveKey& a, const MoveKey& b){
+            if (a.key == b.key) return a.orig < b.orig; // stable
+            return a.key > b.key;
+        });
+
+        // build output vector of moves
         std::vector<int> out; out.reserve(mk.size());
-        for (auto &m : mk) out.push_back(m.mv);
+        for (const auto &m : mk) out.push_back(m.mv);
+
         return out;
     }
 
