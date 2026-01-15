@@ -1,111 +1,90 @@
-# QuantumOX
+<div align="center">
 
-QuantumOX is a high-performance Tic-Tac-Toe engine written in **C++**, implementing the **UTTTI (Universal Tic-Tac-Toe Interface)** protocol (inspired by UCI protocol). It draws inspiration from my earlier chess engine *QuantumKing*, and integrates advanced search algorithms with **alpha-beta pruning**, enabling it to make strategic decisions efficiently—even on complex boards like 4x4, 5x5 or 3x3x3.
+![QuantumOX][quantumox128-logo]
 
-> **NOTE:** Since there’s no dedicated GUI for UTTTI yet, you can manually play using: [Gametable](https://gametable.org/games/tic-tac-toe/) or [Math10](https://www.math10.com/en/math-games/tic-tac-toe/tic-tac-toe.html)
+   <h3>QuantumOX</h3>
 
-## Features
+A tic tac toe engine supporting UTTTI. <br>
+[Report bug][issue-link]
+·
+[Feature request][feature-link]
 
-* Optimized search with alpha-beta pruning
-* Iterative deepening for adaptive search depth
-* Principal Variation (PV) extraction for detailed move analysis
-* Reports combined `pv` in info lines:
+[![Build][build-badge]][build-link]
+[![License][license-badge]][license-link] <br>
+[![Release][release-badge]][release-link]
 
-  * `pv`: final chosen sequence by score
-  * `score`: evaluation of the current board
-  * `depth` / `seldepth`: search progress info
-  * `nodes` / `nps` / `time` for performance stats
-* Correctly identifies draws, wins, and losses
-* Fully UTTTI-compliant (`go depth`, `grid emptygrid`, `setoption`, `stop`, etc.)
-* Configurable board sizes: 3x3, 4x4, 3x3x3, etc.
-* Lightweight, fast, and portable (pure C++)
+</div>
 
-> **Note:** Algorithm switching between different internal search strategies is entirely internal; only the final chosen PV and bestmove are exposed.
+## Overview
 
-## Compilation & Usage
+QuantumOX is a high-performance, GPLv3-licensed Tic-Tac-Toe engine implemented in **C++**. It implements the **UTTTI (Universal Tic Tac Toe Interface)** — a protocol inspired by UCI — and is designed to handle a wide variety of board geometries (2D and 3D) and rule variants at scale.
 
-To compile QuantumOX, use the included **Makefile** or compile manually with:
+Built with attention to search performance and extensibility, QuantumOX integrates advanced search techniques (iterative deepening, alpha-beta pruning, quiescence, transposition tables, and selective extensions) together with pragmatic engineering choices that make it fast and robust across small boards (3x3) and larger multi-dimensional variants (3x3x3, 4x4x4, up to 15x15 grids).
 
-```bash
-g++ -std=c++17 -O3 src/*.cpp -o quantumox
+> **Note:** QuantumOX is a command-line / engine component only — it does **not** include a graphical user interface. A GUI that supports UTTTI is under active development by **[the author][author-link]** and will be published separately.
+
+## Key features
+
+* UTTTI-compatible engine protocol for programmatic control and integration.
+* Highly optimized search with iterative deepening, quiescence search, and selective extensions.
+* Configurable hash table (transposition table) and multi-threaded search support.
+* Advanced move ordering heuristics (killer, history, TT, PV guidance) and per-iteration diagnostics in the info output.
+* Support for multiple grid sizes and dimensions (2D and 3D variants).
+* Portable C++ codebase with a Makefile for Unix-like systems.
+
+## Files in this repository
+
+This distribution includes the following top-level items:
+
+* [README][readme-link] — this document.
+
+* [LICENSE][license-link] — the project's GNU GPLv3 license.
+
+* [src][src-link] — source tree containing the engine implementation and a [Makefile][makefile-link].
+
+## Building
+
+QuantumOX supports both 32-bit and 64-bit targets. The build system is intentionally minimal and portable; it uses a Makefile located in `src/`.
+
+To build on Unix-like systems (Linux, macOS with developer tools), run:
+
+```sh
+cd src
+make -j build
 ```
 
-Run the engine:
+Run `make help` inside `src/` for additional build targets and cross-platform hints. The default targets are tuned for common Intel/AMD CPUs; adjust `CXXFLAGS` in the Makefile if you need compiler-specific tuning.
 
-```bash
-./quantumox
-```
+## Contributing
 
-Basic commands:
+Contributions, bug reports, and feature requests are welcome. Please follow the repository [Contributing Guide](CONTRIBUTING.md) for the contribution process and coding guidelines.
 
-* `uttti` - initialize the handshake
-* `setoption name ... value ...` - edit existing options
-* `isready` - check engine readiness
-* `utttinewgame` - start a new game
-* `grid emptygrid fill ...` - fill the board with moves
-* `go depth {n}` - start searching up to depth `n`
-* `stop` - stop current search
-* `quit` / `exit` - exit engine
-* `help` - show command list
+## License & Redistribution
 
-Example UTTTI session:
+QuantumOX is distributed under the terms of the **GNU General Public License v3** ([LICENSE][license-link]). You are free to use, study, modify, and redistribute the engine — provided that any distributed binaries are accompanied by the corresponding source or a clear pointer to it, and derivative works are licensed under the GPLv3 as required.
 
-```
-uttti
-id name QuantumOX
-id author Kartik
+## Support & Contact
 
-option name Grid type combo default 3x3 var 3x3 var 4x4 var 5x5 var 6x6 var 7x7 var 8x8 var 15x15 var 3x3x3 var 4x4x4
-option name FirstPlayer type combo default X var X var O
-option name Hash type spin default 16 min 1 max 2097152
-option name Threads type spin default 1 min 1 max 512
-utttiok
-isready
-readyok
-utttinewgame
-grid emptygrid
-grid emptygrid fill 1
-go depth 5
-info string Using 1 thread
-info depth 1 seldepth 2 score 12 nodes 18 nps 6000 hashfull 562 time 8 pv 5
-info depth 2 seldepth 2 score 12 nodes 36 nps 3600 hashfull 562 time 14 pv 5
-info depth 3 seldepth 12 score -39 nodes 336 nps 16000 hashfull 1000 time 26 pv 5 3
-info depth 4 seldepth 2 score 69 nodes 363 nps 12964 hashfull 1000 time 33 pv 6 5
-info depth 5 seldepth 12 score -39 nodes 847 nps 19250 hashfull 1000 time 48 pv 5 7
-bestmove 5 ponder 7
-grid emptygrid fill 1 5 7
-go depth 5
-info string Using 1 thread
-info depth 1 seldepth 2 score 31 nodes 14 nps 7000 hashfull 1000 time 8 pv 4
-info depth 2 seldepth 2 score 31 nodes 28 nps 3111 hashfull 1000 time 14 pv 4
-info depth 3 seldepth 4 score -20 nodes 102 nps 6375 hashfull 1000 time 21 pv 4 6
-info depth 4 seldepth 2 score 90 nodes 123 nps 5347 hashfull 1000 time 27 pv 6 4
-info depth 5 seldepth 9 score 20 nodes 266 nps 8580 hashfull 1000 time 36 pv 4 6 8
-bestmove 4 ponder 6
-```
+For updates, releases, and community discussion, check the repository and the links at the top of this README. If you need to reach the project maintainer directly, see **[the author][author-link]** on GitHub.
 
-## Installation
+<!-- Badges -->
 
-Clone the repository:
+[build-badge]: https://img.shields.io/github/actions/workflow/status/Karuso1/QuantumOX/build.yml?branch=master&style=for-the-badge&label=quantumx&logo=github
+[license-badge]: https://img.shields.io/github/license/Karuso1/QuantumOX?style=for-the-badge&label=license&color=success
+[release-badge]: https://img.shields.io/github/v/release/Karuso1/QuantumOX?style=for-the-badge&label=official%20release
 
-```bash
-git clone https://github.com/Karuso1/QuantumOX.git
-cd QuantumOX
-make -j build ARCH=x86-64 # placeholder, see `make` for options
-```
+<!-- Logos -->
 
-Run the compiled engine:
+[quantumox128-logo]: https://raw.githubusercontent.com/Karuso1/assets/refs/heads/main/qox.png
 
-```bash
-./quantumox
-```
+<!-- Links -->
 
-## About
-
-QuantumOX is a personal project by **Kartik**. It demonstrates that even simple games like Tic-Tac-Toe can showcase the depth and efficiency of well-designed AI search algorithms.
-
-## License
-
-QuantumOX is licensed under the **GPL-3.0 License**. You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, as long as you include the original copyright notice.
-
-For the full license text, see [LICENSE](https://github.com/Karuso1/QuantumOX/blob/main/LICENSE).
+[author-link]: https://github.com/Karuso1
+[build-link]: https://github.com/Karuso1/QuantumOX/actions/workflows/build.yml
+[issue-link]: https://github.com/Karuso1/QuantumOX/issues/new?assignees=&labels=&template=BUG-REPORT.yml
+[feature-link]: https://github.com/Karuso1/QuantumOX/issues/new?assignees=&labels=&template=FEATURE-REQUEST.yml
+[license-link]: https://github.com/Karuso1/QuantumOX/blob/master/LICENSE
+[makefile-link]: https://github.com/Karuso1/QuantumOX/blob/master/src/Makefile
+[readme-link]: https://github.com/Karuso1/QuantumOX/blob/master/README.md
+[release-link]: https://github.com/Karuso1/QuantumOX/releases/latest
+[src-link]: https://github.com/Karuso1/QuantumOX/tree/master/src
