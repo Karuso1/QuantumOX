@@ -654,6 +654,12 @@ namespace QuantumOX {
         init_zobrist(0); // re-init (deterministic seed 0); change seed behavior if desired
     }
 
+    // set which side to move
+    void Board::set_side_to_move(char player) {
+        if (player == 'X' || player == 'O') side_to_move = std::string(1, player);
+        else throw std::invalid_argument("Invalid player. Pick either 'X' or 'O'");
+    }
+
     void Board::update_bitboards(int move, const std::string& player) {
         int pos = move - 1;
         int word = pos / 64;
