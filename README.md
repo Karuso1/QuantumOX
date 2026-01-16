@@ -69,7 +69,7 @@ For updates, releases, and community discussion, check the repository and the li
 
 <!-- Badges -->
 
-[build-badge]: https://img.shields.io/github/actions/workflow/status/Karuso1/QuantumOX/build.yml?branch=master&style=for-the-badge&label=quantumx&logo=github
+[build-badge]: https://img.shields.io/github/actions/workflow/status/Karuso1/QuantumOX/build.yml?branch=master&style=for-the-badge&label=quantumox&logo=github
 [license-badge]: https://img.shields.io/github/license/Karuso1/QuantumOX?style=for-the-badge&label=license&color=success
 [release-badge]: https://img.shields.io/github/v/release/Karuso1/QuantumOX?style=for-the-badge&label=official%20release
 
