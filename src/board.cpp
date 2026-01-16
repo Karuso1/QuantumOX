@@ -655,9 +655,12 @@ namespace QuantumOX {
     }
 
     // set which side to move
-    void Board::set_side_to_move(char player) {
-        if (player == 'X' || player == 'O') side_to_move = std::string(1, player);
-        else throw std::invalid_argument("Invalid player. Pick either 'X' or 'O'");
+    void Board::set_side_to_move(const std::string& player) {
+        if (player == "X" || player == "O") {
+            side_to_move = player;
+        } else {
+            throw std::invalid_argument("Invalid player. Must be 'X' or 'O'.");
+        }
     }
 
     void Board::update_bitboards(int move, const std::string& player) {
