@@ -38,7 +38,7 @@ QuantumOXEngine::QuantumOXEngine() {
     // Attempt to set starting player from options if available
     try {
         std::string fp = get_option("FirstPlayer");
-        // board.set_side_to_move(fp); // uncomment if Board exposes setter
+        board.set_side_to_move(fp);
     } catch (...) {
         // ignore
     }
@@ -55,7 +55,7 @@ std::pair<bool,std::string> QuantumOXEngine::set_option(const std::string& name,
         board = Board(value);
         try {
             std::string fp = get_option("FirstPlayer");
-            // board.set_side_to_move(fp);
+            board.set_side_to_move(fp);
         } catch(...) {}
     }
 
@@ -68,7 +68,7 @@ void QuantumOXEngine::new_game() {
     board = Board(grid);
     try {
         std::string fp = get_option("FirstPlayer");
-        // board.set_side_to_move(fp);
+        board.set_side_to_move(fp);
     } catch(...) {}
 }
 
