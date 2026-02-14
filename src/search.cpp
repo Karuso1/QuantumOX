@@ -884,7 +884,6 @@ namespace QuantumOX {
             if (!wide_node && BF <= tactical_probe_limit) {
                 try {
                     std::string before = board.get_side_to_move();
-                    bmake:
                     board.make_move(mv);
                     // Now check opponent:
                     auto next = board.legal_moves();
